@@ -1,40 +1,41 @@
-Embervale Minimap v0.4.34
-=========================
+Enshrouded Minimap v0.4.34
+==========================
 
-Minimapa integrado en el juego para Enshrouded usando Shroudtopia.
+Integrated in-game minimap mod for Enshrouded using Shroudtopia.
 
-No es un overlay externo. El mod dibuja el minimapa dentro del propio juego.
+This is not an external overlay. The mod draws the minimap directly inside the
+game frame.
 
-Que hace
+What it does
+------------
+
+- Shows a circular minimap in the top-right corner.
+- Uses the real Embervale map at minimap scale.
+- Shows the player's position and facing direction.
+- Uses real map marker icons extracted from the game's map UI.
+- Shows nearby points of interest visible or detected by the map.
+- Uses fog-of-war and POI data as a fallback when the game does not expose all
+  live markers.
+
+Controls
 --------
 
-- Muestra un minimapa circular arriba a la derecha.
-- Usa el mapa real de Embervale en pequeno.
-- Muestra posicion y direccion del jugador.
-- Usa iconos reales del mapa del juego.
-- Muestra POIs cercanos visibles/detectados por el mapa.
-- Usa datos de fog-of-war y POIs como fallback cuando el juego no expone todos
-  los marcadores en vivo.
+- + key: zoom in.
+- - key: zoom out.
 
-Controles
----------
+The numpad + and - keys also work.
 
-- Tecla +: ampliar/mas zoom.
-- Tecla -: reducir/menos zoom.
+Zip installation
+----------------
 
-Tambien funcionan + y - del teclado numerico.
-
-Instalacion del zip
--------------------
-
-1. Cierra Enshrouded.
-2. Extrae embervale-minimap-v0.4.34.zip.
-3. Copia la carpeta minimap_mod completa a:
+1. Close Enshrouded.
+2. Extract enshrouded-minimap-v0.4.34.zip.
+3. Copy the full minimap_mod folder to:
 
    C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
 
-4. La carpeta debe contener minimap_mod.dll, mod.json y los archivos .rgba/.bin.
-5. Arranca Enshrouded con Shroudtopia.
+4. The folder must contain minimap_mod.dll, mod.json, and the .rgba/.bin files.
+5. Start Enshrouded with Shroudtopia.
 
-Si ya tenias una version anterior, reemplaza la carpeta minimap_mod completa por
-la nueva.
+If you already had an older version installed, replace the whole minimap_mod
+folder with the new one.

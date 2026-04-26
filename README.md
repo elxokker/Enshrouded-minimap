@@ -1,107 +1,107 @@
-# Embervale Minimap
+# Enshrouded Minimap
 
-Minimapa integrado en el juego para Enshrouded usando Shroudtopia.
+Integrated in-game minimap mod for Enshrouded using Shroudtopia.
 
-No es un overlay externo de Windows. El mod se engancha al cliente del juego y
-dibuja el minimapa dentro del propio frame de Enshrouded.
+This is not an external Windows overlay. The mod hooks into the game client and
+draws the minimap directly inside the Enshrouded frame.
 
-## Que Hace
+## What It Does
 
-- Muestra un minimapa circular en la parte superior derecha.
-- Usa un aro visual premium y assets incluidos en el mod.
-- Renderiza el mapa real de Embervale en pequeno, no un mapa inventado.
-- Muestra la posicion y orientacion del jugador.
-- Usa iconos reales extraidos del mapa del juego.
-- Muestra puntos de interes cercanos visibles/detectados por el mapa.
-- Usa datos de fog-of-war y POIs como fallback cuando el juego no expone todos
-  los marcadores en vivo.
-- Se integra en el render Vulkan del juego, sin ventana externa.
+- Shows a circular minimap in the top-right corner.
+- Uses a premium compass-style frame asset.
+- Renders the real Embervale map at minimap scale.
+- Shows the player's position and facing direction.
+- Uses real map marker icons extracted from the game's map UI.
+- Shows nearby points of interest that are visible or detected by the map.
+- Uses fog-of-war and POI data as a fallback when the game does not expose all
+  live markers.
+- Renders inside the game's Vulkan frame without a separate overlay window.
 
-## Controles
+## Controls
 
-- `+` aumenta el zoom del minimapa.
-- `-` reduce el zoom del minimapa.
+- `+` zooms in.
+- `-` zooms out.
 
-Tambien funcionan `+` y `-` del teclado numerico.
+The numpad `+` and `-` keys also work.
 
-## Descargar Release
+## Download
 
-Descarga el zip desde la ultima release:
+Download the latest zip from the release page:
 
-[Embervale Minimap v0.4.34](https://github.com/elxokker/embervale-minimap/releases/tag/v0.4.34)
+[Enshrouded Minimap v0.4.34](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.34)
 
-Archivo:
+Release asset:
 
-`embervale-minimap-v0.4.34.zip`
+`enshrouded-minimap-v0.4.34.zip`
 
-## Instalar el Zip
+## Installing the Zip
 
-1. Cierra Enshrouded.
-2. Descarga `embervale-minimap-v0.4.34.zip`.
-3. Extrae el zip.
-4. Copia la carpeta `minimap_mod` completa a:
+1. Close Enshrouded.
+2. Download `enshrouded-minimap-v0.4.34.zip`.
+3. Extract the zip.
+4. Copy the full `minimap_mod` folder to:
 
 ```text
 C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
 ```
 
-La carpeta final debe quedar asi:
+The final folder should look like this:
 
 ```text
 Enshrouded
-└─ mods
-   └─ minimap_mod
-      ├─ minimap_mod.dll
-      ├─ mod.json
-      ├─ embervale_minimap_frame.rgba
-      ├─ embervale_minimap_icons.bin
-      ├─ embervale_player_arrow.rgba
-      ├─ embervale_realmap_1280.rgba
-      └─ ...
++-- mods
+    +-- minimap_mod
+        +-- minimap_mod.dll
+        +-- mod.json
+        +-- embervale_minimap_frame.rgba
+        +-- embervale_minimap_icons.bin
+        +-- embervale_player_arrow.rgba
+        +-- embervale_realmap_1280.rgba
+        +-- ...
 ```
 
-5. Arranca Enshrouded con Shroudtopia.
+5. Start Enshrouded with Shroudtopia.
 
-Si ya tenias una version anterior, reemplaza la carpeta `minimap_mod` completa
-por la nueva.
+If you already had an older version installed, replace the whole `minimap_mod`
+folder with the new one.
 
-## Build Desde Codigo
+## Building From Source
 
-Requisitos:
+Requirements:
 
 - Windows.
-- Visual Studio con MSBuild y toolset C++.
-- Shroudtopia instalado en el juego para cargar el mod.
+- Visual Studio with MSBuild and the C++ toolset.
+- Shroudtopia installed in the game folder to load the mod.
 
-Compilar:
+Build:
 
 ```powershell
 .\build-release.ps1
 ```
 
-Instalar en la ruta por defecto de Steam:
+Install to the default Steam path:
 
 ```powershell
 .\install.ps1
 ```
 
-Instalar en otra ruta:
+Install to a custom Enshrouded path:
 
 ```powershell
 .\install.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Enshrouded"
 ```
 
-## Estructura
+## Repository Layout
 
-- `src/` - codigo del mod.
-- `include/` - headers minimos de Shroudtopia usados para compilar.
-- `assets/` - assets que se copian junto al DLL.
-- `build-release.ps1` - build `Release|x64`.
-- `install.ps1` - instala el mod y crea backup de la instalacion anterior.
+- `src/` - mod source code.
+- `include/` - minimal Shroudtopia headers required to build.
+- `assets/` - runtime assets copied next to the DLL.
+- `build-release.ps1` - builds `Release|x64`.
+- `install.ps1` - installs the mod and backs up the previous install.
 
 ## Version
 
-Version actual del mod: `0.4.34`.
+Current mod version: `0.4.34`.
 
-Este mod apunta a una build concreta de Enshrouded/Shroudtopia. Si el juego se
-actualiza, puede ser necesario revisar offsets y hooks.
+This mod targets a specific Enshrouded/Shroudtopia build. If the game updates,
+hook RVAs and structure offsets may need to be revalidated.
