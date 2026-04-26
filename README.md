@@ -1,57 +1,107 @@
 # Embervale Minimap
 
-Integrated in-game minimap mod for Enshrouded running through Shroudtopia.
+Minimapa integrado en el juego para Enshrouded usando Shroudtopia.
 
-This project is intentionally standalone and clean: it contains only the minimap
-source, the minimal Shroudtopia headers needed to compile it, the runtime assets,
-and build/install scripts. It does not include the full Shroudtopia checkout,
-temporary dumps, scratch data, backups, or compiled output.
+No es un overlay externo de Windows. El mod se engancha al cliente del juego y
+dibuja el minimapa dentro del propio frame de Enshrouded.
 
-## Current State
+## Que Hace
 
-- Native in-frame Vulkan minimap, no external overlay window.
-- Premium circular frame asset and real Embervale map texture.
-- Player arrow asset.
-- Real icon atlas extracted from the game map UI.
-- Fog-of-war/static POI fallback.
-- Live hooks for player position, waypoint UI, nearby markers, render present,
-  Vulkan device table, and map-marker visibility.
-- Current mod version: `0.4.34`.
+- Muestra un minimapa circular en la parte superior derecha.
+- Usa un aro visual premium y assets incluidos en el mod.
+- Renderiza el mapa real de Embervale en pequeno, no un mapa inventado.
+- Muestra la posicion y orientacion del jugador.
+- Usa iconos reales extraidos del mapa del juego.
+- Muestra puntos de interes cercanos visibles/detectados por el mapa.
+- Usa datos de fog-of-war y POIs como fallback cuando el juego no expone todos
+  los marcadores en vivo.
+- Se integra en el render Vulkan del juego, sin ventana externa.
 
-## Layout
+## Controles
 
-- `src/` - mod source and precompiled-header files.
-- `include/` - minimal Shroudtopia SDK headers used by the mod.
-- `assets/` - files copied next to `minimap_mod.dll` in the game mod folder.
-- `build-release.ps1` - Release x64 build helper.
-- `install.ps1` - copies the DLL and assets into the Enshrouded mod folder and
-  backs up the previous install.
+- `+` aumenta el zoom del minimapa.
+- `-` reduce el zoom del minimapa.
 
-## Build
+Tambien funcionan `+` y `-` del teclado numerico.
 
-Run from this folder:
+## Descargar Release
+
+Descarga el zip desde la ultima release:
+
+[Embervale Minimap v0.4.34](https://github.com/elxokker/embervale-minimap/releases/tag/v0.4.34)
+
+Archivo:
+
+`embervale-minimap-v0.4.34.zip`
+
+## Instalar el Zip
+
+1. Cierra Enshrouded.
+2. Descarga `embervale-minimap-v0.4.34.zip`.
+3. Extrae el zip.
+4. Copia la carpeta `minimap_mod` completa a:
+
+```text
+C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
+```
+
+La carpeta final debe quedar asi:
+
+```text
+Enshrouded
+└─ mods
+   └─ minimap_mod
+      ├─ minimap_mod.dll
+      ├─ mod.json
+      ├─ embervale_minimap_frame.rgba
+      ├─ embervale_minimap_icons.bin
+      ├─ embervale_player_arrow.rgba
+      ├─ embervale_realmap_1280.rgba
+      └─ ...
+```
+
+5. Arranca Enshrouded con Shroudtopia.
+
+Si ya tenias una version anterior, reemplaza la carpeta `minimap_mod` completa
+por la nueva.
+
+## Build Desde Codigo
+
+Requisitos:
+
+- Windows.
+- Visual Studio con MSBuild y toolset C++.
+- Shroudtopia instalado en el juego para cargar el mod.
+
+Compilar:
 
 ```powershell
 .\build-release.ps1
 ```
 
-The script uses Visual Studio/MSBuild and defaults to `Release|x64`.
-
-## Install
-
-Run:
+Instalar en la ruta por defecto de Steam:
 
 ```powershell
 .\install.ps1
 ```
 
-By default it installs to:
+Instalar en otra ruta:
 
-`C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod`
+```powershell
+.\install.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Enshrouded"
+```
 
-Pass `-GameDir` if Enshrouded is installed somewhere else.
+## Estructura
 
-## Notes
+- `src/` - codigo del mod.
+- `include/` - headers minimos de Shroudtopia usados para compilar.
+- `assets/` - assets que se copian junto al DLL.
+- `build-release.ps1` - build `Release|x64`.
+- `install.ps1` - instala el mod y crea backup de la instalacion anterior.
 
-This is client-side mod code for a specific Enshrouded/Shroudtopia build. If the
-game updates, hook RVAs and structure offsets may need to be revalidated.
+## Version
+
+Version actual del mod: `0.4.34`.
+
+Este mod apunta a una build concreta de Enshrouded/Shroudtopia. Si el juego se
+actualiza, puede ser necesario revisar offsets y hooks.
