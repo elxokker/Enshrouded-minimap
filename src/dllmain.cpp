@@ -63,6 +63,7 @@ namespace
     constexpr DWORD WORLD_DATA_STALE_MS = 15000;
     constexpr DWORD SESSION_LOG_POLL_MS = 1000;
     constexpr DWORD SESSION_LOG_TAIL_BYTES = 128 * 1024;
+    constexpr DWORD MINIMAP_CONFIG_POLL_MS = 1000;
     constexpr DWORD PLAYER_CAMERA_SCAN_INTERVAL_MS = 350;
     constexpr std::size_t CLIENT_CAMERA_SIZE = 0x40;
     constexpr std::size_t PLAYER_CAMERA_ROOT_SCAN_BYTES = 0x2600;
@@ -1123,7 +1124,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.35",
+        "0.4.36",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1203,6 +1204,7 @@ namespace
     std::atomic<bool> g_gameSessionOnline{ false };
     std::atomic<DWORD> g_lastWorldDataTick{ 0 };
     std::atomic<int> g_minimapZoomStep{ 0 };
+    DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
     std::string g_gameLogPath;
 
@@ -1257,6 +1259,7 @@ namespace
 
     bool TryInstallVulkanTableHooks(uintptr_t table);
     void RestoreVulkanTableHooks();
+    bool TryReadMinimapPositionFromConfigFile(ModContext* modContext, std::string& outPosition, std::string& outSource);
 
     void Log(const std::string& message)
     {
@@ -1334,18 +1337,27 @@ namespace
         }
     }
 
-    void RefreshMinimapConfig(ModContext* modContext)
+    void RefreshMinimapConfig(ModContext* modContext, bool forceLog = false)
     {
         std::string configuredPosition = "bottom-right";
-        if (modContext != nullptr && modContext->config.GetString)
+        std::string source = "default";
+        if (!TryReadMinimapPositionFromConfigFile(modContext, configuredPosition, source) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
             configuredPosition = modContext->config.GetString("minimap_mod", "position", configuredPosition);
+            source = "shroudtopia_config_api";
+        }
 
         const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
-        g_minimapPlacement.store(static_cast<int>(placement));
+        const int previous = g_minimapPlacement.exchange(static_cast<int>(placement));
+        if (!forceLog && previous == static_cast<int>(placement))
+            return;
 
         std::ostringstream oss;
         oss << "[Minimap] config"
-            << " | position=" << MinimapPlacementName(placement);
+            << " | position=" << MinimapPlacementName(placement)
+            << " | raw=" << configuredPosition
+            << " | source=" << source;
         Log(oss.str());
     }
 
@@ -1760,6 +1772,168 @@ namespace
             return false;
 
         outText.resize(bytesRead);
+        return true;
+    }
+
+    bool ReadWholeTextFile(const std::string& path, std::string& outText)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file)
+            return false;
+
+        std::ostringstream buffer;
+        buffer << file.rdbuf();
+        outText = buffer.str();
+        return true;
+    }
+
+    std::string ResolveShroudtopiaConfigPath(ModContext* modContext)
+    {
+        if (modContext != nullptr && !modContext->shroudtopia.config_file.empty())
+            return modContext->shroudtopia.config_file;
+
+        char modulePath[MAX_PATH] = {};
+        const DWORD length = GetModuleFileNameA(nullptr, modulePath, static_cast<DWORD>(sizeof(modulePath)));
+        if (length == 0 || length >= sizeof(modulePath))
+            return {};
+
+        char* slash = std::strrchr(modulePath, '\\');
+        if (slash == nullptr)
+            return "shroudtopia.json";
+
+        *(slash + 1) = '\0';
+        return std::string(modulePath) + "shroudtopia.json";
+    }
+
+    bool TryFindJsonObjectBlock(const std::string& text, const char* key, std::size_t& outStart, std::size_t& outEnd)
+    {
+        const std::string keyToken = std::string("\"") + key + "\"";
+        const std::size_t keyPos = text.find(keyToken);
+        if (keyPos == std::string::npos)
+            return false;
+
+        const std::size_t colon = text.find(':', keyPos + keyToken.size());
+        if (colon == std::string::npos)
+            return false;
+
+        const std::size_t openBrace = text.find('{', colon + 1);
+        if (openBrace == std::string::npos)
+            return false;
+
+        bool inString = false;
+        bool escaped = false;
+        int depth = 0;
+        for (std::size_t index = openBrace; index < text.size(); ++index)
+        {
+            const char ch = text[index];
+            if (inString)
+            {
+                if (escaped)
+                    escaped = false;
+                else if (ch == '\\')
+                    escaped = true;
+                else if (ch == '"')
+                    inString = false;
+                continue;
+            }
+
+            if (ch == '"')
+                inString = true;
+            else if (ch == '{')
+                ++depth;
+            else if (ch == '}')
+            {
+                --depth;
+                if (depth == 0)
+                {
+                    outStart = openBrace;
+                    outEnd = index + 1;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool TryFindJsonStringValue(const std::string& text, std::size_t start, std::size_t end, const char* key, std::string& outValue)
+    {
+        const std::string keyToken = std::string("\"") + key + "\"";
+        const std::size_t keyPos = text.find(keyToken, start);
+        if (keyPos == std::string::npos || keyPos >= end)
+            return false;
+
+        const std::size_t colon = text.find(':', keyPos + keyToken.size());
+        if (colon == std::string::npos || colon >= end)
+            return false;
+
+        std::size_t valueStart = colon + 1;
+        while (valueStart < end && (text[valueStart] == ' ' || text[valueStart] == '\t' || text[valueStart] == '\r' || text[valueStart] == '\n'))
+            ++valueStart;
+
+        if (valueStart >= end)
+            return false;
+
+        if (text[valueStart] == '"')
+        {
+            std::string value;
+            bool escaped = false;
+            for (std::size_t index = valueStart + 1; index < end; ++index)
+            {
+                const char ch = text[index];
+                if (escaped)
+                {
+                    value.push_back(ch);
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                    escaped = true;
+                else if (ch == '"')
+                {
+                    outValue = value;
+                    return true;
+                }
+                else
+                    value.push_back(ch);
+            }
+            return false;
+        }
+
+        std::size_t valueEnd = valueStart;
+        while (valueEnd < end && text[valueEnd] != ',' && text[valueEnd] != '}' && text[valueEnd] != '\r' && text[valueEnd] != '\n')
+            ++valueEnd;
+
+        while (valueEnd > valueStart && (text[valueEnd - 1] == ' ' || text[valueEnd - 1] == '\t'))
+            --valueEnd;
+
+        if (valueEnd <= valueStart)
+            return false;
+
+        outValue.assign(text.begin() + valueStart, text.begin() + valueEnd);
+        return true;
+    }
+
+    bool TryReadMinimapPositionFromConfigFile(ModContext* modContext, std::string& outPosition, std::string& outSource)
+    {
+        const std::string configPath = ResolveShroudtopiaConfigPath(modContext);
+        if (configPath.empty())
+            return false;
+
+        std::string text;
+        if (!ReadWholeTextFile(configPath, text))
+            return false;
+
+        std::size_t blockStart = 0;
+        std::size_t blockEnd = 0;
+        if (!TryFindJsonObjectBlock(text, "minimap_mod", blockStart, blockEnd))
+            return false;
+
+        std::string position;
+        if (!TryFindJsonStringValue(text, blockStart, blockEnd, "position", position))
+            return false;
+
+        outPosition = position;
+        outSource = configPath;
         return true;
     }
 
@@ -6832,7 +7006,7 @@ namespace
             }
 
             g_modContext = modContext;
-            RefreshMinimapConfig(modContext);
+            RefreshMinimapConfig(modContext, true);
             g_exeBase = reinterpret_cast<uintptr_t>(GetModuleHandle(nullptr));
             g_iterInit = reinterpret_cast<IterInitFn>(g_exeBase + RVA_ITER_INIT);
             g_iterNext = reinterpret_cast<IterNextFn>(g_exeBase + RVA_ITER_NEXT);
@@ -6951,6 +7125,7 @@ namespace
             g_playerCameraAddress.store(0);
             g_lastPlayerCameraScanTick = 0;
             g_gameLogPath.clear();
+            g_lastConfigPollTick = 0;
             g_lastSessionLogPollTick = 0;
             g_vulkanDeviceTable.store(0);
             g_lastRenderContext.store(0);
@@ -6972,7 +7147,7 @@ namespace
 
         void Activate(ModContext* modContext) override
         {
-            RefreshMinimapConfig(modContext);
+            RefreshMinimapConfig(modContext, true);
             const bool uiOk = ActivateHook(g_localPlayerUiRenderSetupHook);
             const bool waypointOk = ActivateHook(g_playerWaypointsUiHook);
             const bool markerVisibilityOk = ActivateHook(g_mapMarkerVisibilityHook);
@@ -7020,6 +7195,7 @@ namespace
             g_lastWorldDataTick.store(0);
             g_playerCameraAddress.store(0);
             g_lastPlayerCameraScanTick = 0;
+            g_lastConfigPollTick = 0;
             {
                 std::lock_guard<std::mutex> lock(g_visibleMapMarkerMutex);
                 g_visibleMapMarkers.clear();
@@ -7032,10 +7208,17 @@ namespace
             modContext->Log("[Minimap] deactivated");
         }
 
-        void Update(ModContext*) override
+        void Update(ModContext* modContext) override
         {
             if (active)
             {
+                const DWORD now = GetTickCount();
+                if (now - g_lastConfigPollTick >= MINIMAP_CONFIG_POLL_MS)
+                {
+                    g_lastConfigPollTick = now;
+                    RefreshMinimapConfig(modContext);
+                }
+
                 PollGameSessionLog();
                 UpdateMinimapZoomHotkeys();
                 ProbeVulkanTable();

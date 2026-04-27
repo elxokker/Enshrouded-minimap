@@ -30,16 +30,16 @@ The numpad `+` and `-` keys also work.
 
 Download the latest zip from the release page:
 
-[Enshrouded Minimap v0.4.35](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.35)
+[Enshrouded Minimap v0.4.36](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.36)
 
 Release asset:
 
-`enshrouded-minimap-v0.4.35.zip`
+`enshrouded-minimap-v0.4.36.zip`
 
 ## Installing the Zip
 
 1. Close Enshrouded.
-2. Download `enshrouded-minimap-v0.4.35.zip`.
+2. Download `enshrouded-minimap-v0.4.36.zip`.
 3. Extract the zip.
 4. Copy the full `minimap_mod` folder to:
 
@@ -94,7 +94,8 @@ Example:
 }
 ```
 
-Restart the game after changing the value.
+The mod reads this value directly and refreshes it every second while active.
+If the minimap is not loaded yet, start or restart the game after changing it.
 
 ## Building From Source
 
@@ -132,7 +133,7 @@ Install to a custom Enshrouded path:
 
 ## Version
 
-Current mod version: `0.4.35`.
+Current mod version: `0.4.36`.
 
 This mod targets a specific Enshrouded/Shroudtopia build. If the game updates,
 hook RVAs and structure offsets may need to be revalidated.
