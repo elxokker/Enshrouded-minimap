@@ -35,7 +35,9 @@ if (Test-Path -LiteralPath (Join-Path $targetDir "minimap_mod.dll")) {
 }
 
 Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $targetDir "minimap_mod.dll") -Force
-Copy-Item -LiteralPath (Join-Path $assetsDir "*") -Destination $targetDir -Force
+Get-ChildItem -LiteralPath $assetsDir -File | ForEach-Object {
+  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $targetDir $_.Name) -Force
+}
 
 Write-Host "Installed minimap_mod to $targetDir"
 if (Test-Path -LiteralPath $backupDir) {

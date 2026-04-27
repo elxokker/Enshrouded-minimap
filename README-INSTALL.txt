@@ -1,4 +1,4 @@
-Enshrouded Minimap v0.4.34
+Enshrouded Minimap v0.4.35
 ==========================
 
 Integrated in-game minimap mod for Enshrouded using Shroudtopia.
@@ -9,7 +9,8 @@ game frame.
 What it does
 ------------
 
-- Shows a circular minimap in the top-right corner.
+- Shows a circular minimap on the right side of the screen.
+- Defaults to the bottom-right corner.
 - Uses the real Embervale map at minimap scale.
 - Shows the player's position and facing direction.
 - Uses real map marker icons extracted from the game's map UI.
@@ -29,7 +30,7 @@ Zip installation
 ----------------
 
 1. Close Enshrouded.
-2. Extract enshrouded-minimap-v0.4.34.zip.
+2. Extract enshrouded-minimap-v0.4.35.zip.
 3. Copy the full minimap_mod folder to:
 
    C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
@@ -39,3 +40,25 @@ Zip installation
 
 If you already had an older version installed, replace the whole minimap_mod
 folder with the new one.
+
+Position config
+---------------
+
+The minimap position is controlled from Shroudtopia's config file:
+
+   C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\shroudtopia.json
+
+Set mods.minimap_mod.position to one of these values:
+
+- top-right
+- middle-right
+- bottom-right
+
+Example:
+
+   "minimap_mod": {
+     "active": true,
+     "position": "bottom-right"
+   }
+
+Restart the game after changing the value.

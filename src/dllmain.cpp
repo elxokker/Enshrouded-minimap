@@ -1123,7 +1123,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.34",
+        "0.4.35",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1206,6 +1206,15 @@ namespace
     DWORD g_lastSessionLogPollTick = 0;
     std::string g_gameLogPath;
 
+    enum class MinimapPlacement : int
+    {
+        TopRight = 0,
+        MiddleRight = 1,
+        BottomRight = 2
+    };
+
+    std::atomic<int> g_minimapPlacement{ static_cast<int>(MinimapPlacement::BottomRight) };
+
     std::array<std::uint8_t, LOCAL_PLAYER_UI_RENDER_SETUP_STOLEN_SIZE> g_localPlayerUiRenderSetupExpected = {
         0x48, 0x89, 0x7C, 0x24, 0x18,
         0x55,
@@ -1278,6 +1287,90 @@ namespace
     T ClampValue(T value, T low, T high)
     {
         return MaxValue(low, MinValue(value, high));
+    }
+
+    std::string NormalizePlacementValue(const std::string& value)
+    {
+        std::string normalized;
+        normalized.reserve(value.size());
+        for (char ch : value)
+        {
+            if (ch >= 'A' && ch <= 'Z')
+                ch = static_cast<char>('a' + (ch - 'A'));
+
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+                normalized.push_back(ch);
+        }
+        return normalized;
+    }
+
+    MinimapPlacement ParseMinimapPlacement(const std::string& value)
+    {
+        const std::string normalized = NormalizePlacementValue(value);
+        if (normalized == "topright" || normalized == "top" || normalized == "tr")
+            return MinimapPlacement::TopRight;
+
+        if (normalized == "middleright" || normalized == "centerright" ||
+            normalized == "middle" || normalized == "center" ||
+            normalized == "right" || normalized == "mr")
+        {
+            return MinimapPlacement::MiddleRight;
+        }
+
+        return MinimapPlacement::BottomRight;
+    }
+
+    const char* MinimapPlacementName(MinimapPlacement placement)
+    {
+        switch (placement)
+        {
+        case MinimapPlacement::TopRight:
+            return "top-right";
+        case MinimapPlacement::MiddleRight:
+            return "middle-right";
+        case MinimapPlacement::BottomRight:
+        default:
+            return "bottom-right";
+        }
+    }
+
+    void RefreshMinimapConfig(ModContext* modContext)
+    {
+        std::string configuredPosition = "bottom-right";
+        if (modContext != nullptr && modContext->config.GetString)
+            configuredPosition = modContext->config.GetString("minimap_mod", "position", configuredPosition);
+
+        const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
+        g_minimapPlacement.store(static_cast<int>(placement));
+
+        std::ostringstream oss;
+        oss << "[Minimap] config"
+            << " | position=" << MinimapPlacementName(placement);
+        Log(oss.str());
+    }
+
+    int ComputeMinimapCenterY(std::uint32_t height, int radius, int marginY)
+    {
+        const int screenHeight = static_cast<int>(height);
+        const int top = marginY + radius;
+        const int bottom = screenHeight - marginY - radius;
+        const int safeTop = radius + 8;
+        const int safeBottom = MaxValue(safeTop, screenHeight - radius - 8);
+
+        MinimapPlacement placement = MinimapPlacement::BottomRight;
+        const int rawPlacement = g_minimapPlacement.load();
+        if (rawPlacement == static_cast<int>(MinimapPlacement::TopRight))
+            placement = MinimapPlacement::TopRight;
+        else if (rawPlacement == static_cast<int>(MinimapPlacement::MiddleRight))
+            placement = MinimapPlacement::MiddleRight;
+
+        int cy = bottom;
+        if (placement == MinimapPlacement::TopRight)
+            cy = top;
+        else if (placement == MinimapPlacement::MiddleRight)
+            cy = screenHeight / 2;
+
+        return ClampValue(cy, safeTop, safeBottom);
     }
 
     bool SafeRead(uintptr_t address, void* buffer, std::size_t size)
@@ -6125,7 +6218,7 @@ namespace
         const int marginX = MaxValue(58, static_cast<int>(renderer.width) / 58);
         const int marginY = MaxValue(52, static_cast<int>(renderer.height) / 42);
         const int cx = static_cast<int>(renderer.width) - marginX - radius;
-        const int cy = marginY + radius;
+        const int cy = ComputeMinimapCenterY(renderer.height, radius, marginY);
         const int zoomStep = ClampValue(g_minimapZoomStep.load(), -3, 3);
         const float zoom = std::pow(1.32f, static_cast<float>(zoomStep));
         const float unitsPerPixel = MINIMAP_BASE_UNITS_PER_PIXEL / zoom;
@@ -6739,6 +6832,7 @@ namespace
             }
 
             g_modContext = modContext;
+            RefreshMinimapConfig(modContext);
             g_exeBase = reinterpret_cast<uintptr_t>(GetModuleHandle(nullptr));
             g_iterInit = reinterpret_cast<IterInitFn>(g_exeBase + RVA_ITER_INIT);
             g_iterNext = reinterpret_cast<IterNextFn>(g_exeBase + RVA_ITER_NEXT);
@@ -6878,6 +6972,7 @@ namespace
 
         void Activate(ModContext* modContext) override
         {
+            RefreshMinimapConfig(modContext);
             const bool uiOk = ActivateHook(g_localPlayerUiRenderSetupHook);
             const bool waypointOk = ActivateHook(g_playerWaypointsUiHook);
             const bool markerVisibilityOk = ActivateHook(g_mapMarkerVisibilityHook);
