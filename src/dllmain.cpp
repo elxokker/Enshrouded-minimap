@@ -1125,7 +1125,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.39",
+        "0.4.40",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1264,6 +1264,7 @@ namespace
     bool TryInstallVulkanTableHooks(uintptr_t table);
     void RestoreVulkanTableHooks();
     bool TryReadMinimapConfigStringFromFile(ModContext* modContext, const char* key, std::string& outValue, std::string& outSource);
+    void LogRendererThrottled(const std::string& message);
 
     void Log(const std::string& message)
     {
@@ -3368,23 +3369,77 @@ namespace
         g_vulkanFunctionOffsetsLogged = true;
     }
 
+    bool IsExecutableAddress(uintptr_t address)
+    {
+        if (address == 0)
+            return false;
+
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(reinterpret_cast<const void*>(address), &info, sizeof(info)) != sizeof(info))
+            return false;
+
+        if (info.State != MEM_COMMIT)
+            return false;
+
+        const DWORD protect = info.Protect & 0xFF;
+        return protect == PAGE_EXECUTE ||
+            protect == PAGE_EXECUTE_READ ||
+            protect == PAGE_EXECUTE_READWRITE ||
+            protect == PAGE_EXECUTE_WRITECOPY;
+    }
+
+    GetDeviceProcAddrFn GetExportedVulkanGetDeviceProcAddr()
+    {
+        HMODULE vulkanModule = GetModuleHandleW(L"vulkan-1.dll");
+        if (vulkanModule == nullptr)
+            vulkanModule = LoadLibraryW(L"vulkan-1.dll");
+
+        if (vulkanModule == nullptr)
+            return nullptr;
+
+        auto* proc = reinterpret_cast<GetDeviceProcAddrFn>(GetProcAddress(vulkanModule, "vkGetDeviceProcAddr"));
+        return IsExecutableAddress(reinterpret_cast<uintptr_t>(proc)) ? proc : nullptr;
+    }
+
+    GetDeviceProcAddrFn GetTableVulkanGetDeviceProcAddr(uintptr_t table)
+    {
+        uintptr_t getDeviceProcAddrValue = 0;
+        if (!ReadVulkanTableFunction(table, VULKAN_TABLE_GET_DEVICE_PROC_ADDR_OFFSET, getDeviceProcAddrValue) ||
+            !IsExecutableAddress(getDeviceProcAddrValue))
+        {
+            return nullptr;
+        }
+
+        return reinterpret_cast<GetDeviceProcAddrFn>(getDeviceProcAddrValue);
+    }
+
+    void* ResolveDeviceFunctionPtr(GetDeviceProcAddrFn getDeviceProcAddr, void* device, const char* name)
+    {
+        if (getDeviceProcAddr == nullptr || device == nullptr || name == nullptr)
+            return nullptr;
+
+        __try
+        {
+            void* pointer = getDeviceProcAddr(device, name);
+            return IsExecutableAddress(reinterpret_cast<uintptr_t>(pointer)) ? pointer : nullptr;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return nullptr;
+        }
+    }
+
     template <typename T>
     T ResolveDeviceFunction(GetDeviceProcAddrFn getDeviceProcAddr, void* device, const char* name)
     {
-        return reinterpret_cast<T>(getDeviceProcAddr(device, name));
+        return reinterpret_cast<T>(ResolveDeviceFunctionPtr(getDeviceProcAddr, device, name));
     }
 
-    bool TryLoadVulkanRendererFns(VulkanRendererFns& fns, void* device)
+    bool LoadVulkanRendererFnsWithResolver(VulkanRendererFns& fns, void* device, GetDeviceProcAddrFn getDeviceProcAddr)
     {
-        const uintptr_t table = g_vulkanDeviceTable.load();
-        uintptr_t getDeviceProcAddrValue = 0;
-        if (!ReadVulkanTableFunction(table, VULKAN_TABLE_GET_DEVICE_PROC_ADDR_OFFSET, getDeviceProcAddrValue) ||
-            getDeviceProcAddrValue == 0)
-        {
+        if (getDeviceProcAddr == nullptr)
             return false;
-        }
 
-        auto* getDeviceProcAddr = reinterpret_cast<GetDeviceProcAddrFn>(getDeviceProcAddrValue);
         const uintptr_t originalGetImages = g_originalGetSwapchainImages.load();
         fns.getSwapchainImages = originalGetImages != 0
             ? reinterpret_cast<GetSwapchainImagesFn>(originalGetImages)
@@ -3442,6 +3497,29 @@ namespace
         fns.queueSubmit = ResolveDeviceFunction<QueueSubmitFn>(getDeviceProcAddr, device, "vkQueueSubmit");
         fns.deviceWaitIdle = ResolveDeviceFunction<DeviceWaitIdleFn>(getDeviceProcAddr, device, "vkDeviceWaitIdle");
         return fns.Ready();
+    }
+
+    bool TryLoadVulkanRendererFns(VulkanRendererFns& fns, void* device)
+    {
+        VulkanRendererFns tableFns{};
+        GetDeviceProcAddrFn tableGetDeviceProcAddr = GetTableVulkanGetDeviceProcAddr(g_vulkanDeviceTable.load());
+        if (LoadVulkanRendererFnsWithResolver(tableFns, device, tableGetDeviceProcAddr))
+        {
+            fns = tableFns;
+            return true;
+        }
+
+        VulkanRendererFns exportedFns{};
+        GetDeviceProcAddrFn exportedGetDeviceProcAddr = GetExportedVulkanGetDeviceProcAddr();
+        if (exportedGetDeviceProcAddr != tableGetDeviceProcAddr &&
+            LoadVulkanRendererFnsWithResolver(exportedFns, device, exportedGetDeviceProcAddr))
+        {
+            fns = exportedFns;
+            LogRendererThrottled("[Minimap] Vulkan device functions resolved via vulkan-1.dll export fallback");
+            return true;
+        }
+
+        return false;
     }
 
     void LogRendererThrottled(const std::string& message)
