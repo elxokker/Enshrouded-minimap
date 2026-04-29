@@ -1124,7 +1124,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.36",
+        "0.4.37",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1204,6 +1204,7 @@ namespace
     std::atomic<bool> g_gameSessionOnline{ false };
     std::atomic<DWORD> g_lastWorldDataTick{ 0 };
     std::atomic<int> g_minimapZoomStep{ 0 };
+    std::atomic<bool> g_minimapVisible{ true };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
     std::string g_gameLogPath;
@@ -1704,6 +1705,9 @@ namespace
 
     bool ShouldDrawMinimapInWorld()
     {
+        if (!g_minimapVisible.load())
+            return false;
+
         CURSORINFO cursorInfo{};
         cursorInfo.cbSize = sizeof(cursorInfo);
         if (GetCursorInfo(&cursorInfo) && (cursorInfo.flags & CURSOR_SHOWING) != 0)
@@ -6579,6 +6583,19 @@ namespace
         }
     }
 
+    void UpdateMinimapVisibilityHotkey()
+    {
+        if ((GetAsyncKeyState(VK_MULTIPLY) & 0x0001) == 0)
+            return;
+
+        const bool visible = !g_minimapVisible.load();
+        g_minimapVisible.store(visible);
+
+        std::ostringstream oss;
+        oss << "[Minimap] visibility=" << (visible ? "on" : "off");
+        Log(oss.str());
+    }
+
     void LogVulkanPresentInfo(void* queue, const void* presentInfo)
     {
         const DWORD now = GetTickCount();
@@ -7220,6 +7237,7 @@ namespace
                 }
 
                 PollGameSessionLog();
+                UpdateMinimapVisibilityHotkey();
                 UpdateMinimapZoomHotkeys();
                 ProbeVulkanTable();
             }

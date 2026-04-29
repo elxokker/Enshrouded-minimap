@@ -23,6 +23,7 @@ draws the minimap directly inside the Enshrouded frame.
 
 - `+` zooms in.
 - `-` zooms out.
+- Numpad `*` toggles the minimap on/off without leaving the game.
 
 The numpad `+` and `-` keys also work.
 
@@ -30,16 +31,16 @@ The numpad `+` and `-` keys also work.
 
 Download the latest zip from the release page:
 
-[Enshrouded Minimap v0.4.36](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.36)
+[Enshrouded Minimap v0.4.37](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.37)
 
 Release asset:
 
-`enshrouded-minimap-v0.4.36.zip`
+`enshrouded-minimap-v0.4.37.zip`
 
 ## Installing the Zip
 
 1. Close Enshrouded.
-2. Download `enshrouded-minimap-v0.4.36.zip`.
+2. Download `enshrouded-minimap-v0.4.37.zip`.
 3. Extract the zip.
 4. Copy the full `minimap_mod` folder to:
 
@@ -133,7 +134,7 @@ Install to a custom Enshrouded path:
 
 ## Version
 
-Current mod version: `0.4.36`.
+Current mod version: `0.4.37`.
 
 This mod targets a specific Enshrouded/Shroudtopia build. If the game updates,
 hook RVAs and structure offsets may need to be revalidated.
