@@ -1125,7 +1125,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.40",
+        "0.4.41",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -6898,6 +6898,22 @@ namespace
         Log(oss.str());
     }
 
+    void UpdateMinimapRuntimeControls(ModContext* modContext)
+    {
+        if (modContext == nullptr)
+            return;
+
+        const DWORD now = GetTickCount();
+        if (now - g_lastConfigPollTick >= MINIMAP_CONFIG_POLL_MS)
+        {
+            g_lastConfigPollTick = now;
+            RefreshMinimapConfig(modContext);
+        }
+
+        UpdateMinimapVisibilityHotkey();
+        UpdateMinimapZoomHotkeys();
+    }
+
     void LogVulkanPresentInfo(void* queue, const void* presentInfo)
     {
         const DWORD now = GetTickCount();
@@ -7031,6 +7047,7 @@ namespace
 
     std::int32_t __fastcall HookQueuePresent(void* queue, const void* presentInfo)
     {
+        UpdateMinimapRuntimeControls(g_modContext);
         TryScanVulkanDeviceFunctions();
         LogVulkanPresentInfo(queue, presentInfo);
 
@@ -7607,16 +7624,8 @@ namespace
         {
             if (active)
             {
-                const DWORD now = GetTickCount();
-                if (now - g_lastConfigPollTick >= MINIMAP_CONFIG_POLL_MS)
-                {
-                    g_lastConfigPollTick = now;
-                    RefreshMinimapConfig(modContext);
-                }
-
+                UpdateMinimapRuntimeControls(modContext);
                 PollGameSessionLog();
-                UpdateMinimapVisibilityHotkey();
-                UpdateMinimapZoomHotkeys();
                 ProbeVulkanTable();
             }
         }
