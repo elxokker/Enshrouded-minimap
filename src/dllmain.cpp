@@ -27,6 +27,7 @@ namespace
     constexpr uintptr_t RVA_VULKAN_DEVICE_TABLE_INIT = 0xDDBDE0;
     constexpr uintptr_t RVA_ITER_INIT = 0x8CD000;
     constexpr uintptr_t RVA_ITER_NEXT = 0x8C84E0;
+    constexpr uintptr_t HOOK_PATTERN_SCAN_RADIUS = 0x400000;
 
     constexpr std::size_t LOCAL_PLAYER_UI_RENDER_SETUP_STOLEN_SIZE = 13;
     constexpr std::size_t PLAYER_WAYPOINTS_UI_STOLEN_SIZE = 15;
@@ -1124,7 +1125,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.38",
+        "0.4.39",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1133,6 +1134,7 @@ namespace
 
     ModContext* g_modContext = nullptr;
     uintptr_t g_exeBase = 0;
+    std::size_t g_exeImageSize = 0;
     IterInitFn g_iterInit = nullptr;
     IterNextFn g_iterNext = nullptr;
     Mem::Detour* g_localPlayerUiRenderSetupHook = nullptr;
@@ -1494,6 +1496,123 @@ namespace
         return SafeRead(address, &outValue, sizeof(T));
     }
 
+    std::size_t GetImageSize(uintptr_t moduleBase)
+    {
+        if (moduleBase == 0)
+            return 0;
+
+        auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(moduleBase);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return 0;
+
+        auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(moduleBase + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return 0;
+
+        return static_cast<std::size_t>(nt->OptionalHeader.SizeOfImage);
+    }
+
+    uintptr_t RvaDistance(uintptr_t left, uintptr_t right)
+    {
+        return left > right ? left - right : right - left;
+    }
+
+    bool BytesMatchRva(uintptr_t rva, const std::uint8_t* expected, std::size_t size)
+    {
+        if (g_exeBase == 0 || g_exeImageSize == 0 || rva >= g_exeImageSize || size > g_exeImageSize - rva)
+            return false;
+
+        const auto* current = reinterpret_cast<const std::uint8_t*>(g_exeBase + rva);
+        return std::memcmp(current, expected, size) == 0;
+    }
+
+    uintptr_t ResolvePatternRvaNear(uintptr_t preferredRva, const std::uint8_t* expected, std::size_t size, const char* label)
+    {
+        if (BytesMatchRva(preferredRva, expected, size))
+            return preferredRva;
+
+        if (g_exeBase == 0 || g_exeImageSize == 0 || size == 0 || size > g_exeImageSize)
+        {
+            Log(std::string("[Minimap] unable to scan hook pattern for ") + label);
+            return 0;
+        }
+
+        const uintptr_t start = preferredRva > HOOK_PATTERN_SCAN_RADIUS ? preferredRva - HOOK_PATTERN_SCAN_RADIUS : 0;
+        const uintptr_t rawEnd = preferredRva + HOOK_PATTERN_SCAN_RADIUS;
+        const uintptr_t end = MinValue<uintptr_t>(rawEnd, static_cast<uintptr_t>(g_exeImageSize - size));
+        uintptr_t best = 0;
+        uintptr_t bestDistance = static_cast<uintptr_t>(-1);
+
+        const auto* image = reinterpret_cast<const std::uint8_t*>(g_exeBase);
+        for (uintptr_t rva = start; rva <= end; ++rva)
+        {
+            if (std::memcmp(image + rva, expected, size) != 0)
+                continue;
+
+            const uintptr_t distance = RvaDistance(rva, preferredRva);
+            if (best == 0 || distance < bestDistance)
+            {
+                best = rva;
+                bestDistance = distance;
+            }
+        }
+
+        if (best == 0)
+        {
+            std::ostringstream oss;
+            oss << "[Minimap] hook pattern missing for " << label
+                << " | preferred=" << Hex(preferredRva);
+            Log(oss.str());
+            return 0;
+        }
+
+        std::ostringstream oss;
+        oss << "[Minimap] hook pattern resolved for " << label
+            << " | preferred=" << Hex(preferredRva)
+            << " | resolved=" << Hex(best)
+            << " | delta=" << static_cast<long long>(best) - static_cast<long long>(preferredRva);
+        Log(oss.str());
+        return best;
+    }
+
+    bool TryFindRelativeCallTargetRva(uintptr_t functionRva, std::size_t searchBytes, int ordinal, uintptr_t& outTargetRva)
+    {
+        outTargetRva = 0;
+        if (functionRva == 0 || ordinal <= 0 || g_exeBase == 0 || g_exeImageSize == 0 || functionRva >= g_exeImageSize)
+            return false;
+
+        const std::size_t maxBytes = MinValue<std::size_t>(
+            searchBytes,
+            g_exeImageSize > functionRva ? g_exeImageSize - functionRva : 0
+        );
+        if (maxBytes < 5)
+            return false;
+
+        const auto* code = reinterpret_cast<const std::uint8_t*>(g_exeBase + functionRva);
+        int found = 0;
+        for (std::size_t offset = 0; offset + 5 <= maxBytes; ++offset)
+        {
+            if (code[offset] != 0xE8)
+                continue;
+
+            std::int32_t rel = 0;
+            std::memcpy(&rel, code + offset + 1, sizeof(rel));
+            const auto target = static_cast<std::int64_t>(functionRva) +
+                static_cast<std::int64_t>(offset) + 5 + rel;
+            if (target <= 0 || target >= static_cast<std::int64_t>(g_exeImageSize))
+                continue;
+
+            ++found;
+            if (found == ordinal)
+            {
+                outTargetRva = static_cast<uintptr_t>(target);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool ValidatePrologue(uintptr_t address, const std::uint8_t* expected, std::size_t size, const char* label)
     {
         std::vector<std::uint8_t> current(size, 0);
@@ -1603,6 +1722,12 @@ namespace
     template <std::size_t N>
     Mem::Detour* InstallEntryHook(uintptr_t rva, const std::array<std::uint8_t, N>& expected, void* handler, const char* label)
     {
+        if (rva == 0)
+        {
+            Log(std::string("[Minimap] hook unavailable for ") + label);
+            return nullptr;
+        }
+
         const uintptr_t address = g_exeBase + rva;
         if (!ValidatePrologue(address, expected.data(), expected.size(), label))
             return nullptr;
@@ -1624,9 +1749,15 @@ namespace
         return detour;
     }
 
-    Mem::Detour* InstallMapMarkerVisibilityLoopHook(void* handler)
+    Mem::Detour* InstallMapMarkerVisibilityLoopHook(uintptr_t rva, void* handler)
     {
-        const uintptr_t address = g_exeBase + RVA_KNOWLEDGE_QUERY_MAPMARKER_VISIBILITY_LOOP;
+        if (rva == 0)
+        {
+            Log("[Minimap] hook unavailable for map_marker_visibility_loop");
+            return nullptr;
+        }
+
+        const uintptr_t address = g_exeBase + rva;
         if (!ValidatePrologue(address, g_mapMarkerVisibilityLoopExpected.data(), g_mapMarkerVisibilityLoopExpected.size(), "map_marker_visibility_loop"))
             return nullptr;
 
@@ -7118,36 +7249,112 @@ namespace
             g_modContext = modContext;
             RefreshMinimapConfig(modContext, true);
             g_exeBase = reinterpret_cast<uintptr_t>(GetModuleHandle(nullptr));
-            g_iterInit = reinterpret_cast<IterInitFn>(g_exeBase + RVA_ITER_INIT);
-            g_iterNext = reinterpret_cast<IterNextFn>(g_exeBase + RVA_ITER_NEXT);
+            g_exeImageSize = GetImageSize(g_exeBase);
+
+            const uintptr_t uiRenderSetupRva = ResolvePatternRvaNear(
+                RVA_LOCAL_PLAYER_UI_RENDER_SETUP,
+                g_localPlayerUiRenderSetupExpected.data(),
+                g_localPlayerUiRenderSetupExpected.size(),
+                "local_player_ui_render_setup"
+            );
+            const uintptr_t waypointsUiRva = ResolvePatternRvaNear(
+                RVA_PLAYER_WAYPOINTS_UI,
+                g_playerWaypointsUiExpected.data(),
+                g_playerWaypointsUiExpected.size(),
+                "player_waypoints_ui"
+            );
+            const uintptr_t mapMarkerVisibilityRva = ResolvePatternRvaNear(
+                RVA_KNOWLEDGE_QUERY_MAPMARKER_VISIBILITY,
+                g_mapMarkerVisibilityExpected.data(),
+                g_mapMarkerVisibilityExpected.size(),
+                "map_marker_visibility"
+            );
+            const uintptr_t mapMarkerVisibilityLoopRva = mapMarkerVisibilityRva != 0
+                ? mapMarkerVisibilityRva + (RVA_KNOWLEDGE_QUERY_MAPMARKER_VISIBILITY_LOOP - RVA_KNOWLEDGE_QUERY_MAPMARKER_VISIBILITY)
+                : 0;
+            const uintptr_t renderPresentFrameRva = ResolvePatternRvaNear(
+                RVA_RENDER_PRESENT_FRAME,
+                g_renderPresentFrameExpected.data(),
+                g_renderPresentFrameExpected.size(),
+                "render_present_frame"
+            );
+            const uintptr_t vulkanDeviceTableInitRva = ResolvePatternRvaNear(
+                RVA_VULKAN_DEVICE_TABLE_INIT,
+                g_vulkanDeviceTableInitExpected.data(),
+                g_vulkanDeviceTableInitExpected.size(),
+                "vulkan_device_table_init"
+            );
+
+            uintptr_t iterInitRva = 0;
+            uintptr_t iterNextRva = 0;
+            if (!TryFindRelativeCallTargetRva(uiRenderSetupRva, 0x60, 1, iterInitRva))
+                TryFindRelativeCallTargetRva(mapMarkerVisibilityRva, 0x60, 1, iterInitRva);
+            TryFindRelativeCallTargetRva(mapMarkerVisibilityRva, 0x60, 2, iterNextRva);
+
+            if (iterInitRva != 0)
+            {
+                g_iterInit = reinterpret_cast<IterInitFn>(g_exeBase + iterInitRva);
+                if (iterInitRva != RVA_ITER_INIT)
+                {
+                    std::ostringstream oss;
+                    oss << "[Minimap] iterator init resolved"
+                        << " | preferred=" << Hex(RVA_ITER_INIT)
+                        << " | resolved=" << Hex(iterInitRva);
+                    modContext->Log(oss.str().c_str());
+                }
+            }
+            else
+            {
+                g_iterInit = nullptr;
+                modContext->Log("[Minimap] iterator init unavailable");
+            }
+
+            if (iterNextRva != 0)
+            {
+                g_iterNext = reinterpret_cast<IterNextFn>(g_exeBase + iterNextRva);
+                if (iterNextRva != RVA_ITER_NEXT)
+                {
+                    std::ostringstream oss;
+                    oss << "[Minimap] iterator next resolved"
+                        << " | preferred=" << Hex(RVA_ITER_NEXT)
+                        << " | resolved=" << Hex(iterNextRva);
+                    modContext->Log(oss.str().c_str());
+                }
+            }
+            else
+            {
+                g_iterNext = nullptr;
+                modContext->Log("[Minimap] iterator next unavailable");
+            }
 
             g_localPlayerUiRenderSetupHook = InstallEntryHook(
-                RVA_LOCAL_PLAYER_UI_RENDER_SETUP,
+                uiRenderSetupRva,
                 g_localPlayerUiRenderSetupExpected,
                 reinterpret_cast<void*>(&CaptureUiRenderSetupHook),
                 "local_player_ui_render_setup"
             );
 
             g_playerWaypointsUiHook = InstallEntryHook(
-                RVA_PLAYER_WAYPOINTS_UI,
+                waypointsUiRva,
                 g_playerWaypointsUiExpected,
                 reinterpret_cast<void*>(&CaptureWaypointsHook),
                 "player_waypoints_ui"
             );
 
             g_mapMarkerVisibilityHook = InstallMapMarkerVisibilityLoopHook(
+                mapMarkerVisibilityLoopRva,
                 reinterpret_cast<void*>(&CaptureMapMarkerVisibilityRecordHook)
             );
 
             g_renderPresentFrameHook = InstallEntryHook(
-                RVA_RENDER_PRESENT_FRAME,
+                renderPresentFrameRva,
                 g_renderPresentFrameExpected,
                 reinterpret_cast<void*>(&CaptureRenderPresentFrameHook),
                 "render_present_frame"
             );
 
             g_vulkanDeviceTableInitHook = InstallEntryHook(
-                RVA_VULKAN_DEVICE_TABLE_INIT,
+                vulkanDeviceTableInitRva,
                 g_vulkanDeviceTableInitExpected,
                 reinterpret_cast<void*>(&CaptureVulkanDeviceTableInitHook),
                 "vulkan_device_table_init"
