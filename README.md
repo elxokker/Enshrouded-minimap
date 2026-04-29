@@ -23,24 +23,24 @@ draws the minimap directly inside the Enshrouded frame.
 
 - `+` zooms in.
 - `-` zooms out.
-- Numpad `*` toggles the minimap on/off without leaving the game.
+- `F10` toggles the minimap on/off without leaving the game.
 
-The numpad `+` and `-` keys also work.
+The numpad `+`, `-`, and `*` keys also work.
 
 ## Download
 
 Download the latest zip from the release page:
 
-[Enshrouded Minimap v0.4.37](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.37)
+[Enshrouded Minimap v0.4.38](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.38)
 
 Release asset:
 
-`enshrouded-minimap-v0.4.37.zip`
+`enshrouded-minimap-v0.4.38.zip`
 
 ## Installing the Zip
 
 1. Close Enshrouded.
-2. Download `enshrouded-minimap-v0.4.37.zip`.
+2. Download `enshrouded-minimap-v0.4.38.zip`.
 3. Extract the zip.
 4. Copy the full `minimap_mod` folder to:
 
@@ -89,13 +89,19 @@ Example:
   "mods": {
     "minimap_mod": {
       "active": true,
-      "position": "bottom-right"
+      "position": "bottom-right",
+      "toggle_key": "F10"
     }
   }
 }
 ```
 
-The mod reads this value directly and refreshes it every second while active.
+The mod also reads `mods.minimap_mod.toggle_key` every second while active.
+Recommended value: `F10`. Supported readable values include `F1`-`F24`,
+`insert`, `delete`, `home`, `end`, `pageup`, `pagedown`, `backspace`, and
+`numpad-*`.
+
+The mod reads these values directly and refreshes them every second while active.
 If the minimap is not loaded yet, start or restart the game after changing it.
 
 ## Building From Source
@@ -134,7 +140,7 @@ Install to a custom Enshrouded path:
 
 ## Version
 
-Current mod version: `0.4.37`.
+Current mod version: `0.4.38`.
 
 This mod targets a specific Enshrouded/Shroudtopia build. If the game updates,
 hook RVAs and structure offsets may need to be revalidated.

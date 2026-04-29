@@ -1,4 +1,4 @@
-Enshrouded Minimap v0.4.37
+Enshrouded Minimap v0.4.38
 ==========================
 
 Integrated in-game minimap mod for Enshrouded using Shroudtopia.
@@ -23,15 +23,15 @@ Controls
 
 - + key: zoom in.
 - - key: zoom out.
-- Numpad * key: toggle minimap on/off without leaving the game.
+- F10 key: toggle minimap on/off without leaving the game.
 
-The numpad + and - keys also work.
+The numpad +, -, and * keys also work.
 
 Zip installation
 ----------------
 
 1. Close Enshrouded.
-2. Extract enshrouded-minimap-v0.4.37.zip.
+2. Extract enshrouded-minimap-v0.4.38.zip.
 3. Copy the full minimap_mod folder to:
 
    C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
@@ -59,8 +59,13 @@ Example:
 
    "minimap_mod": {
      "active": true,
-     "position": "bottom-right"
+     "position": "bottom-right",
+     "toggle_key": "F10"
    }
 
-The mod reads this value directly and refreshes it every second while active.
+The mod also reads mods.minimap_mod.toggle_key every second while active.
+Recommended value: F10. Supported readable values include F1-F24, insert,
+delete, home, end, pageup, pagedown, backspace, and numpad-*.
+
+The mod reads these values directly and refreshes them every second while active.
 If the minimap is not loaded yet, start or restart the game after changing it.

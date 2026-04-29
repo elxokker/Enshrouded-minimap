@@ -1,13 +1,14 @@
 {
   "id": "minimap_mod",
-  "version": "0.4.37",
+  "version": "0.4.38",
   "name": "Embervale Minimap",
   "description": "Internal minimap data bridge for Enshrouded. No external overlay window.",
   "author": "OpenAI + xoker",
   "shroudtopia": {
     "default": {
       "active": true,
-      "position": "bottom-right"
+      "position": "bottom-right",
+      "toggle_key": "F10"
     }
   }
 }

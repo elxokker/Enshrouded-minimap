@@ -1124,7 +1124,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.37",
+        "0.4.38",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1205,6 +1205,7 @@ namespace
     std::atomic<DWORD> g_lastWorldDataTick{ 0 };
     std::atomic<int> g_minimapZoomStep{ 0 };
     std::atomic<bool> g_minimapVisible{ true };
+    std::atomic<int> g_minimapToggleKey{ VK_F10 };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
     std::string g_gameLogPath;
@@ -1260,7 +1261,7 @@ namespace
 
     bool TryInstallVulkanTableHooks(uintptr_t table);
     void RestoreVulkanTableHooks();
-    bool TryReadMinimapPositionFromConfigFile(ModContext* modContext, std::string& outPosition, std::string& outSource);
+    bool TryReadMinimapConfigStringFromFile(ModContext* modContext, const char* key, std::string& outValue, std::string& outSource);
 
     void Log(const std::string& message)
     {
@@ -1293,7 +1294,7 @@ namespace
         return MaxValue(low, MinValue(value, high));
     }
 
-    std::string NormalizePlacementValue(const std::string& value)
+    std::string NormalizeConfigValue(const std::string& value)
     {
         std::string normalized;
         normalized.reserve(value.size());
@@ -1310,7 +1311,7 @@ namespace
 
     MinimapPlacement ParseMinimapPlacement(const std::string& value)
     {
-        const std::string normalized = NormalizePlacementValue(value);
+        const std::string normalized = NormalizeConfigValue(value);
         if (normalized == "topright" || normalized == "top" || normalized == "tr")
             return MinimapPlacement::TopRight;
 
@@ -1338,27 +1339,115 @@ namespace
         }
     }
 
+    int ParseMinimapToggleKey(const std::string& value)
+    {
+        const std::string normalized = NormalizeConfigValue(value);
+        if (normalized.size() >= 2 && normalized[0] == 'f')
+        {
+            int number = 0;
+            bool valid = true;
+            for (std::size_t index = 1; index < normalized.size(); ++index)
+            {
+                const char ch = normalized[index];
+                if (ch < '0' || ch > '9')
+                {
+                    valid = false;
+                    break;
+                }
+                number = (number * 10) + (ch - '0');
+            }
+            if (valid && number >= 1 && number <= 24)
+                return VK_F1 + number - 1;
+        }
+
+        if (normalized == "numpadmultiply" || normalized == "numpadstar" ||
+            normalized == "multiply" || normalized == "asterisk" || normalized == "star")
+            return VK_MULTIPLY;
+        if (normalized == "insert" || normalized == "ins")
+            return VK_INSERT;
+        if (normalized == "delete" || normalized == "del")
+            return VK_DELETE;
+        if (normalized == "home")
+            return VK_HOME;
+        if (normalized == "end")
+            return VK_END;
+        if (normalized == "pageup" || normalized == "pgup")
+            return VK_PRIOR;
+        if (normalized == "pagedown" || normalized == "pgdn")
+            return VK_NEXT;
+        if (normalized == "backspace")
+            return VK_BACK;
+
+        return VK_F10;
+    }
+
+    std::string MinimapToggleKeyName(int key)
+    {
+        if (key >= VK_F1 && key <= VK_F24)
+        {
+            std::ostringstream oss;
+            oss << "F" << (key - VK_F1 + 1);
+            return oss.str();
+        }
+
+        switch (key)
+        {
+        case VK_MULTIPLY:
+            return "Numpad *";
+        case VK_INSERT:
+            return "Insert";
+        case VK_DELETE:
+            return "Delete";
+        case VK_HOME:
+            return "Home";
+        case VK_END:
+            return "End";
+        case VK_PRIOR:
+            return "PageUp";
+        case VK_NEXT:
+            return "PageDown";
+        case VK_BACK:
+            return "Backspace";
+        default:
+            return "F10";
+        }
+    }
+
     void RefreshMinimapConfig(ModContext* modContext, bool forceLog = false)
     {
         std::string configuredPosition = "bottom-right";
-        std::string source = "default";
-        if (!TryReadMinimapPositionFromConfigFile(modContext, configuredPosition, source) &&
+        std::string positionSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "position", configuredPosition, positionSource) &&
             modContext != nullptr && modContext->config.GetString)
         {
             configuredPosition = modContext->config.GetString("minimap_mod", "position", configuredPosition);
-            source = "shroudtopia_config_api";
+            positionSource = "shroudtopia_config_api";
+        }
+
+        std::string configuredToggleKey = "F10";
+        std::string toggleKeySource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "toggle_key", configuredToggleKey, toggleKeySource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredToggleKey = modContext->config.GetString("minimap_mod", "toggle_key", configuredToggleKey);
+            toggleKeySource = "shroudtopia_config_api";
         }
 
         const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
+        const int toggleKey = ParseMinimapToggleKey(configuredToggleKey);
         const int previous = g_minimapPlacement.exchange(static_cast<int>(placement));
-        if (!forceLog && previous == static_cast<int>(placement))
+        const int previousToggleKey = g_minimapToggleKey.exchange(toggleKey);
+        if (!forceLog && previous == static_cast<int>(placement) && previousToggleKey == toggleKey)
             return;
 
         std::ostringstream oss;
         oss << "[Minimap] config"
             << " | position=" << MinimapPlacementName(placement)
             << " | raw=" << configuredPosition
-            << " | source=" << source;
+            << " | position_source=" << positionSource
+            << " | toggle_key=" << MinimapToggleKeyName(toggleKey)
+            << " | toggle_raw=" << configuredToggleKey
+            << " | toggle_source=" << toggleKeySource;
         Log(oss.str());
     }
 
@@ -1917,10 +2006,10 @@ namespace
         return true;
     }
 
-    bool TryReadMinimapPositionFromConfigFile(ModContext* modContext, std::string& outPosition, std::string& outSource)
+    bool TryReadMinimapConfigStringFromFile(ModContext* modContext, const char* key, std::string& outValue, std::string& outSource)
     {
         const std::string configPath = ResolveShroudtopiaConfigPath(modContext);
-        if (configPath.empty())
+        if (configPath.empty() || key == nullptr || key[0] == '\0')
             return false;
 
         std::string text;
@@ -1932,11 +2021,11 @@ namespace
         if (!TryFindJsonObjectBlock(text, "minimap_mod", blockStart, blockEnd))
             return false;
 
-        std::string position;
-        if (!TryFindJsonStringValue(text, blockStart, blockEnd, "position", position))
+        std::string value;
+        if (!TryFindJsonStringValue(text, blockStart, blockEnd, key, value))
             return false;
 
-        outPosition = position;
+        outValue = value;
         outSource = configPath;
         return true;
     }
@@ -6585,14 +6674,18 @@ namespace
 
     void UpdateMinimapVisibilityHotkey()
     {
-        if ((GetAsyncKeyState(VK_MULTIPLY) & 0x0001) == 0)
+        const int toggleKey = g_minimapToggleKey.load();
+        const bool configuredPressed = toggleKey != 0 && (GetAsyncKeyState(toggleKey) & 0x0001) != 0;
+        const bool legacyPressed = toggleKey != VK_MULTIPLY && (GetAsyncKeyState(VK_MULTIPLY) & 0x0001) != 0;
+        if (!configuredPressed && !legacyPressed)
             return;
 
         const bool visible = !g_minimapVisible.load();
         g_minimapVisible.store(visible);
 
         std::ostringstream oss;
-        oss << "[Minimap] visibility=" << (visible ? "on" : "off");
+        oss << "[Minimap] visibility=" << (visible ? "on" : "off")
+            << " | key=" << (configuredPressed ? MinimapToggleKeyName(toggleKey) : "Numpad *");
         Log(oss.str());
     }
 
