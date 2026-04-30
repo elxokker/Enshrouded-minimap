@@ -1,4 +1,4 @@
-Enshrouded Minimap v0.4.41
+Enshrouded Minimap v0.4.42
 ==========================
 
 Integrated in-game minimap mod for Enshrouded using Shroudtopia.
@@ -31,7 +31,7 @@ Zip installation
 ----------------
 
 1. Close Enshrouded.
-2. Extract enshrouded-minimap-v0.4.41.zip.
+2. Extract enshrouded-minimap-v0.4.42.zip.
 3. Copy the full minimap_mod folder to:
 
    C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod

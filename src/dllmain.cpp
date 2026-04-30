@@ -66,10 +66,14 @@ namespace
     constexpr DWORD SESSION_LOG_TAIL_BYTES = 128 * 1024;
     constexpr DWORD MINIMAP_CONFIG_POLL_MS = 1000;
     constexpr DWORD PLAYER_CAMERA_SCAN_INTERVAL_MS = 350;
+    constexpr DWORD RENDER_CAMERA_SCAN_INTERVAL_MS = 1000;
     constexpr std::size_t CLIENT_CAMERA_SIZE = 0x40;
     constexpr std::size_t PLAYER_CAMERA_ROOT_SCAN_BYTES = 0x2600;
     constexpr std::size_t PLAYER_CAMERA_CHILD_SCAN_BYTES = 0x1200;
     constexpr std::size_t PLAYER_CAMERA_POINTER_SCAN_BYTES = 0x180;
+    constexpr std::size_t RENDER_CAMERA_ROOT_SCAN_BYTES = 0x1800;
+    constexpr std::size_t RENDER_CAMERA_CHILD_SCAN_BYTES = 0x800;
+    constexpr std::size_t RENDER_CAMERA_POINTER_SCAN_BYTES = 0x100;
     constexpr int REAL_MAP_MIN_TEXTURE_SIZE = 512;
     constexpr int REAL_MAP_MAX_TEXTURE_SIZE = 2048;
     constexpr float REAL_MAP_WORLD_SIZE = 10240.0f;
@@ -1125,7 +1129,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.41",
+        "0.4.42",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1210,7 +1214,9 @@ namespace
     std::atomic<int> g_minimapToggleKey{ VK_F10 };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
+    DWORD g_lastRenderCameraScanTick = 0;
     std::string g_gameLogPath;
+    std::string g_shroudtopiaConfigPath;
 
     enum class MinimapPlacement : int
     {
@@ -2014,6 +2020,9 @@ namespace
 
     std::string ResolveShroudtopiaConfigPath(ModContext* modContext)
     {
+        if (!g_shroudtopiaConfigPath.empty())
+            return g_shroudtopiaConfigPath;
+
         if (modContext != nullptr && !modContext->shroudtopia.config_file.empty())
             return modContext->shroudtopia.config_file;
 
@@ -2182,6 +2191,7 @@ namespace
         g_lastWorldDataTick.store(0);
         g_playerCameraAddress.store(0);
         g_lastPlayerCameraScanTick = 0;
+        g_lastRenderCameraScanTick = 0;
 
         {
             std::lock_guard<std::mutex> lock(g_playerPositionMutex);
@@ -2224,7 +2234,10 @@ namespace
         {
             const bool wasOnline = g_gameSessionOnline.exchange(true);
             if (!wasOnline)
+            {
+                g_minimapVisible.store(true);
                 Log("[Minimap] game session detected from Enshrouded log");
+            }
             return;
         }
 
@@ -2250,6 +2263,10 @@ namespace
             return "waypoint_child_camera";
         case 23:
             return "waypoint_direct_camera";
+        case 24:
+            return "render_context_camera";
+        case 25:
+            return "render_child_camera";
         default:
             return "unknown";
         }
@@ -2590,21 +2607,77 @@ namespace
         return PublishBestPlayerPosition(best);
     }
 
-    void ScanCameraRoot(uintptr_t root, PlayerPositionCandidate& best)
+    void ScanCameraRootWithLimits(
+        uintptr_t root,
+        PlayerPositionCandidate& best,
+        std::uint32_t rootChannel,
+        std::uint32_t childChannel,
+        std::size_t rootScanBytes,
+        std::size_t pointerScanBytes,
+        std::size_t childScanBytes)
     {
         if (!IsLikelyRuntimePointer(root))
             return;
 
-        TryCaptureCameraPositionFromBlock(root, 21, PLAYER_CAMERA_ROOT_SCAN_BYTES, best);
+        TryCaptureCameraPositionFromBlock(root, rootChannel, rootScanBytes, best);
 
-        for (std::size_t pointerOffset = 0; pointerOffset + sizeof(uintptr_t) <= PLAYER_CAMERA_POINTER_SCAN_BYTES; pointerOffset += sizeof(uintptr_t))
+        for (std::size_t pointerOffset = 0; pointerOffset + sizeof(uintptr_t) <= pointerScanBytes; pointerOffset += sizeof(uintptr_t))
         {
             uintptr_t child = 0;
             if (!SafeReadValue(root + pointerOffset, child) || !IsLikelyRuntimePointer(child))
                 continue;
 
-            TryCaptureCameraPositionFromBlock(child, 22, PLAYER_CAMERA_CHILD_SCAN_BYTES, best);
+            TryCaptureCameraPositionFromBlock(child, childChannel, childScanBytes, best);
         }
+    }
+
+    void ScanCameraRoot(uintptr_t root, PlayerPositionCandidate& best)
+    {
+        ScanCameraRootWithLimits(
+            root,
+            best,
+            21,
+            22,
+            PLAYER_CAMERA_ROOT_SCAN_BYTES,
+            PLAYER_CAMERA_POINTER_SCAN_BYTES,
+            PLAYER_CAMERA_CHILD_SCAN_BYTES);
+    }
+
+    bool TryCapturePlayerCameraFromRenderRoots()
+    {
+        const DWORD now = GetTickCount();
+        if (now - g_lastRenderCameraScanTick < RENDER_CAMERA_SCAN_INTERVAL_MS)
+            return false;
+
+        g_lastRenderCameraScanTick = now;
+
+        PlayerPositionCandidate best{};
+        const std::array<uintptr_t, 3> roots = {
+            g_lastRenderContext.load(),
+            g_lastGraphicsContext.load(),
+            g_lastSwapchainState.load()
+        };
+
+        for (uintptr_t root : roots)
+        {
+            ScanCameraRootWithLimits(
+                root,
+                best,
+                24,
+                25,
+                RENDER_CAMERA_ROOT_SCAN_BYTES,
+                RENDER_CAMERA_POINTER_SCAN_BYTES,
+                RENDER_CAMERA_CHILD_SCAN_BYTES);
+        }
+
+        if (!best.valid)
+            return false;
+
+        const uintptr_t cameraAddress = best.source + best.offset;
+        if (IsLikelyRuntimePointer(cameraAddress))
+            g_playerCameraAddress.store(cameraAddress);
+
+        return PublishBestPlayerPosition(best);
     }
 
     bool TryCapturePlayerCameraFromWaypointRecord(const WaypointsUiIterationRecord& record)
@@ -6794,6 +6867,8 @@ namespace
             return false;
 
         TryRefreshPlayerPositionFromCachedCamera();
+        if (!HasFreshPlayerPosition())
+            TryCapturePlayerCameraFromRenderRoots();
         if (!ShouldDrawMinimapInWorld())
             return false;
 
@@ -6900,9 +6975,6 @@ namespace
 
     void UpdateMinimapRuntimeControls(ModContext* modContext)
     {
-        if (modContext == nullptr)
-            return;
-
         const DWORD now = GetTickCount();
         if (now - g_lastConfigPollTick >= MINIMAP_CONFIG_POLL_MS)
         {
@@ -7342,6 +7414,7 @@ namespace
             }
 
             g_modContext = modContext;
+            g_shroudtopiaConfigPath = ResolveShroudtopiaConfigPath(modContext);
             RefreshMinimapConfig(modContext, true);
             g_exeBase = reinterpret_cast<uintptr_t>(GetModuleHandle(nullptr));
             g_exeImageSize = GetImageSize(g_exeBase);
@@ -7536,7 +7609,9 @@ namespace
             g_lastWorldDataTick.store(0);
             g_playerCameraAddress.store(0);
             g_lastPlayerCameraScanTick = 0;
+            g_lastRenderCameraScanTick = 0;
             g_gameLogPath.clear();
+            g_shroudtopiaConfigPath.clear();
             g_lastConfigPollTick = 0;
             g_lastSessionLogPollTick = 0;
             g_vulkanDeviceTable.store(0);
@@ -7607,6 +7682,7 @@ namespace
             g_lastWorldDataTick.store(0);
             g_playerCameraAddress.store(0);
             g_lastPlayerCameraScanTick = 0;
+            g_lastRenderCameraScanTick = 0;
             g_lastConfigPollTick = 0;
             {
                 std::lock_guard<std::mutex> lock(g_visibleMapMarkerMutex);
