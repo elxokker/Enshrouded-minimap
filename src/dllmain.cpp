@@ -1129,7 +1129,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.42",
+        "0.4.43",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1212,6 +1212,7 @@ namespace
     std::atomic<int> g_minimapZoomStep{ 0 };
     std::atomic<bool> g_minimapVisible{ true };
     std::atomic<int> g_minimapToggleKey{ VK_F10 };
+    std::atomic<bool> g_renderCameraFallbackEnabled{ false };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
     DWORD g_lastRenderCameraScanTick = 0;
@@ -1390,6 +1391,24 @@ namespace
         return VK_F10;
     }
 
+    bool ParseConfigBoolean(const std::string& value, bool fallback)
+    {
+        const std::string normalized = NormalizeConfigValue(value);
+        if (normalized == "true" || normalized == "1" || normalized == "yes" ||
+            normalized == "on" || normalized == "enabled" || normalized == "enable")
+        {
+            return true;
+        }
+
+        if (normalized == "false" || normalized == "0" || normalized == "no" ||
+            normalized == "off" || normalized == "disabled" || normalized == "disable")
+        {
+            return false;
+        }
+
+        return fallback;
+    }
+
     std::string MinimapToggleKeyName(int key)
     {
         if (key >= VK_F1 && key <= VK_F24)
@@ -1442,12 +1461,28 @@ namespace
             toggleKeySource = "shroudtopia_config_api";
         }
 
+        std::string configuredRenderFallback = "false";
+        std::string renderFallbackSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "render_camera_fallback", configuredRenderFallback, renderFallbackSource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredRenderFallback = modContext->config.GetString("minimap_mod", "render_camera_fallback", configuredRenderFallback);
+            renderFallbackSource = "shroudtopia_config_api";
+        }
+
         const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
         const int toggleKey = ParseMinimapToggleKey(configuredToggleKey);
+        const bool renderFallback = ParseConfigBoolean(configuredRenderFallback, false);
         const int previous = g_minimapPlacement.exchange(static_cast<int>(placement));
         const int previousToggleKey = g_minimapToggleKey.exchange(toggleKey);
-        if (!forceLog && previous == static_cast<int>(placement) && previousToggleKey == toggleKey)
+        const bool previousRenderFallback = g_renderCameraFallbackEnabled.exchange(renderFallback);
+        if (!forceLog &&
+            previous == static_cast<int>(placement) &&
+            previousToggleKey == toggleKey &&
+            previousRenderFallback == renderFallback)
+        {
             return;
+        }
 
         std::ostringstream oss;
         oss << "[Minimap] config"
@@ -1456,7 +1491,9 @@ namespace
             << " | position_source=" << positionSource
             << " | toggle_key=" << MinimapToggleKeyName(toggleKey)
             << " | toggle_raw=" << configuredToggleKey
-            << " | toggle_source=" << toggleKeySource;
+            << " | toggle_source=" << toggleKeySource
+            << " | render_camera_fallback=" << (renderFallback ? "on" : "off")
+            << " | render_camera_fallback_source=" << renderFallbackSource;
         Log(oss.str());
     }
 
@@ -6867,7 +6904,7 @@ namespace
             return false;
 
         TryRefreshPlayerPositionFromCachedCamera();
-        if (!HasFreshPlayerPosition())
+        if (!HasFreshPlayerPosition() && g_renderCameraFallbackEnabled.load())
             TryCapturePlayerCameraFromRenderRoots();
         if (!ShouldDrawMinimapInWorld())
             return false;
