@@ -31,16 +31,16 @@ The numpad `+`, `-`, and `*` keys also work.
 
 Download the latest zip from the release page:
 
-[Enshrouded Minimap v0.4.43](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.43)
+[Enshrouded Minimap v0.4.44](https://github.com/elxokker/Enshrouded-minimap/releases/tag/v0.4.44)
 
 Release asset:
 
-`enshrouded-minimap-v0.4.43.zip`
+`enshrouded-minimap-v0.4.44.zip`
 
 ## Installing the Zip
 
 1. Close Enshrouded.
-2. Download `enshrouded-minimap-v0.4.43.zip`.
+2. Download `enshrouded-minimap-v0.4.44.zip`.
 3. Extract the zip.
 4. Copy the full `minimap_mod` folder to:
 
@@ -91,7 +91,10 @@ Example:
       "active": true,
       "position": "bottom-right",
       "toggle_key": "F10",
-      "render_camera_fallback": false
+      "render_camera_fallback": false,
+      "debug_logging": false,
+      "map_sample_step": 2,
+      "max_icons": 64
     }
   }
 }
@@ -141,7 +144,7 @@ Install to a custom Enshrouded path:
 
 ## Version
 
-Current mod version: `0.4.43`.
+Current mod version: `0.4.44`.
 
 The mod resolves hook signatures near the known Enshrouded client addresses at
 load time, which makes small game updates less likely to break the minimap.

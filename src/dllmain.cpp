@@ -89,6 +89,8 @@ namespace
     constexpr int MINIMAP_FRAME_MAX_SIZE = 1024;
     constexpr std::uint32_t MAP_MARKER_QUEST_IMPORTANT_KIND = 0xA7CADC08u;
     constexpr std::uint32_t MAP_MARKER_QUEST_KIND = 0xC52E92E5u;
+    constexpr int MINIMAP_DEFAULT_MAP_SAMPLE_STEP = 2;
+    constexpr int MINIMAP_DEFAULT_MAX_DRAWN_POINTS = 64;
 
     constexpr double FIXED_32_32_TO_WORLD = 1.0 / 4294967296.0;
 
@@ -1129,7 +1131,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.43",
+        "0.4.44",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1213,6 +1215,9 @@ namespace
     std::atomic<bool> g_minimapVisible{ true };
     std::atomic<int> g_minimapToggleKey{ VK_F10 };
     std::atomic<bool> g_renderCameraFallbackEnabled{ false };
+    std::atomic<bool> g_debugLoggingEnabled{ false };
+    std::atomic<int> g_minimapMapSampleStep{ MINIMAP_DEFAULT_MAP_SAMPLE_STEP };
+    std::atomic<int> g_minimapMaxDrawnPoints{ MINIMAP_DEFAULT_MAX_DRAWN_POINTS };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
     DWORD g_lastRenderCameraScanTick = 0;
@@ -1409,6 +1414,26 @@ namespace
         return fallback;
     }
 
+    int ParseConfigInteger(const std::string& value, int fallback, int low, int high)
+    {
+        const std::string normalized = NormalizeConfigValue(value);
+        if (normalized.empty())
+            return fallback;
+
+        int parsed = 0;
+        for (char ch : normalized)
+        {
+            if (ch < '0' || ch > '9')
+                return fallback;
+
+            parsed = (parsed * 10) + (ch - '0');
+            if (parsed > high)
+                return high;
+        }
+
+        return ClampValue(parsed, low, high);
+    }
+
     std::string MinimapToggleKeyName(int key)
     {
         if (key >= VK_F1 && key <= VK_F24)
@@ -1470,16 +1495,52 @@ namespace
             renderFallbackSource = "shroudtopia_config_api";
         }
 
+        std::string configuredDebugLogging = "false";
+        std::string debugLoggingSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "debug_logging", configuredDebugLogging, debugLoggingSource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredDebugLogging = modContext->config.GetString("minimap_mod", "debug_logging", configuredDebugLogging);
+            debugLoggingSource = "shroudtopia_config_api";
+        }
+
+        std::string configuredMapSampleStep = "2";
+        std::string mapSampleStepSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "map_sample_step", configuredMapSampleStep, mapSampleStepSource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredMapSampleStep = modContext->config.GetString("minimap_mod", "map_sample_step", configuredMapSampleStep);
+            mapSampleStepSource = "shroudtopia_config_api";
+        }
+
+        std::string configuredMaxIcons = "64";
+        std::string maxIconsSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "max_icons", configuredMaxIcons, maxIconsSource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredMaxIcons = modContext->config.GetString("minimap_mod", "max_icons", configuredMaxIcons);
+            maxIconsSource = "shroudtopia_config_api";
+        }
+
         const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
         const int toggleKey = ParseMinimapToggleKey(configuredToggleKey);
         const bool renderFallback = ParseConfigBoolean(configuredRenderFallback, false);
+        const bool debugLogging = ParseConfigBoolean(configuredDebugLogging, false);
+        const int mapSampleStep = ParseConfigInteger(configuredMapSampleStep, MINIMAP_DEFAULT_MAP_SAMPLE_STEP, 1, 4);
+        const int maxIcons = ParseConfigInteger(configuredMaxIcons, MINIMAP_DEFAULT_MAX_DRAWN_POINTS, 8, 128);
         const int previous = g_minimapPlacement.exchange(static_cast<int>(placement));
         const int previousToggleKey = g_minimapToggleKey.exchange(toggleKey);
         const bool previousRenderFallback = g_renderCameraFallbackEnabled.exchange(renderFallback);
+        const bool previousDebugLogging = g_debugLoggingEnabled.exchange(debugLogging);
+        const int previousMapSampleStep = g_minimapMapSampleStep.exchange(mapSampleStep);
+        const int previousMaxIcons = g_minimapMaxDrawnPoints.exchange(maxIcons);
         if (!forceLog &&
             previous == static_cast<int>(placement) &&
             previousToggleKey == toggleKey &&
-            previousRenderFallback == renderFallback)
+            previousRenderFallback == renderFallback &&
+            previousDebugLogging == debugLogging &&
+            previousMapSampleStep == mapSampleStep &&
+            previousMaxIcons == maxIcons)
         {
             return;
         }
@@ -1493,7 +1554,13 @@ namespace
             << " | toggle_raw=" << configuredToggleKey
             << " | toggle_source=" << toggleKeySource
             << " | render_camera_fallback=" << (renderFallback ? "on" : "off")
-            << " | render_camera_fallback_source=" << renderFallbackSource;
+            << " | render_camera_fallback_source=" << renderFallbackSource
+            << " | debug_logging=" << (debugLogging ? "on" : "off")
+            << " | debug_logging_source=" << debugLoggingSource
+            << " | map_sample_step=" << mapSampleStep
+            << " | map_sample_step_source=" << mapSampleStepSource
+            << " | max_icons=" << maxIcons
+            << " | max_icons_source=" << maxIconsSource;
         Log(oss.str());
     }
 
@@ -2424,6 +2491,9 @@ namespace
 
         NoteWorldData("player_position");
 
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         const DWORD now = position.lastUpdateTick;
         if (now - g_lastPlayerPositionSummaryTick < 3000)
             return;
@@ -2924,6 +2994,9 @@ namespace
         }
 
         const DWORD now = GetTickCount();
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         if (now - g_lastNearbySummaryTick < 5000)
             return;
 
@@ -2977,6 +3050,9 @@ namespace
 
     void PublishUiRenderSnapshot(const UiRenderSnapshot& snapshot)
     {
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         const DWORD now = GetTickCount();
         if (now - g_lastUiRenderSummaryTick < 5000)
             return;
@@ -3039,6 +3115,9 @@ namespace
         }
 
         const DWORD now = GetTickCount();
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         if (!changed && now - g_lastSummaryTick < 5000)
             return;
 
@@ -3188,6 +3267,9 @@ namespace
             SafeReadValue(reinterpret_cast<uintptr_t>(swapchainState) + 0x120, presentCount);
             SafeReadValue(reinterpret_cast<uintptr_t>(swapchainState) + 0x118, presentSwapchains);
         }
+
+        if (!g_debugLoggingEnabled.load())
+            return;
 
         std::ostringstream oss;
         oss << "[Minimap] render present frame"
@@ -4091,6 +4173,7 @@ namespace
         for (std::uint32_t family : candidates)
         {
             VkCommandPoolCreateInfo commandPoolInfo{};
+            commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
             commandPoolInfo.queueFamilyIndex = family;
 
             void* commandPool = nullptr;
@@ -5929,6 +6012,9 @@ namespace
         if (!changed || now - g_lastVisibleMapMarkerSummaryTick < 5000)
             return;
 
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         g_lastVisibleMapMarkerSummaryTick = now;
         std::ostringstream oss;
         oss << "[Minimap] real map marker visibility feed"
@@ -6315,6 +6401,23 @@ namespace
         return true;
     }
 
+    void LimitMinimapWorldPoints(std::vector<MinimapWorldPoint>& points, float centerX, float centerZ)
+    {
+        const int maxPoints = ClampValue(g_minimapMaxDrawnPoints.load(), 8, 128);
+        if (points.size() <= static_cast<std::size_t>(maxPoints))
+            return;
+
+        std::stable_sort(points.begin(), points.end(), [centerX, centerZ](const MinimapWorldPoint& left, const MinimapWorldPoint& right)
+        {
+            const float leftDx = left.x - centerX;
+            const float leftDz = left.z - centerZ;
+            const float rightDx = right.x - centerX;
+            const float rightDz = right.z - centerZ;
+            return (leftDx * leftDx + leftDz * leftDz) < (rightDx * rightDx + rightDz * rightDz);
+        });
+        points.resize(static_cast<std::size_t>(maxPoints));
+    }
+
     bool ProjectWorldToMinimap(float worldX, float worldZ, float centerX, float centerZ, float unitsPerPixel, float headingRadians, int cx, int cy, int radius, int& outX, int& outY, bool& clipped)
     {
         const float dx = (worldX - centerX) / unitsPerPixel;
@@ -6348,14 +6451,17 @@ namespace
         const float sinHeading = std::sin(headingRadians);
         std::lock_guard<std::mutex> lock(g_realMapMutex);
         const bool hasMap = g_realMap.loaded && !g_realMap.rgba.empty();
+        const int sampleStep = ClampValue(g_minimapMapSampleStep.load(), 1, 4);
         const auto quantizeColor = [](float value) -> float
         {
             constexpr float kSteps = 34.0f;
             return std::round(ClampValue(value, 0.0f, 1.0f) * kSteps) / kSteps;
         };
 
-        for (int y = -innerRadius; y <= innerRadius; ++y)
+        for (int y = -innerRadius; y <= innerRadius; y += sampleStep)
         {
+            const int rowHeight = MinValue(sampleStep, innerRadius - y + 1);
+            const int sampleY = y + rowHeight / 2;
             int runStart = 0;
             float runRed = 0.0f;
             float runGreen = 0.0f;
@@ -6367,13 +6473,15 @@ namespace
                 if (!inRun || endX <= runStart)
                     return;
 
-                CmdClearRect(renderer, commandBuffer, runRed, runGreen, runBlue, 1.0f, cx + runStart, cy + y, endX - runStart, 1);
+                CmdClearRect(renderer, commandBuffer, runRed, runGreen, runBlue, 1.0f, cx + runStart, cy + y, endX - runStart, rowHeight);
                 inRun = false;
             };
 
-            for (int x = -innerRadius; x <= innerRadius; ++x)
+            for (int x = -innerRadius; x <= innerRadius; x += sampleStep)
             {
-                const int distanceSq = x * x + y * y;
+                const int columnWidth = MinValue(sampleStep, innerRadius - x + 1);
+                const int sampleX = x + columnWidth / 2;
+                const int distanceSq = sampleX * sampleX + sampleY * sampleY;
                 if (distanceSq > innerRadius * innerRadius)
                 {
                     flushRun(x);
@@ -6385,8 +6493,8 @@ namespace
                 float blue = 0.042f;
                 if (hasMap)
                 {
-                    const float northUpX = cosHeading * static_cast<float>(x) - sinHeading * static_cast<float>(y);
-                    const float northUpY = sinHeading * static_cast<float>(x) + cosHeading * static_cast<float>(y);
+                    const float northUpX = cosHeading * static_cast<float>(sampleX) - sinHeading * static_cast<float>(sampleY);
+                    const float northUpY = sinHeading * static_cast<float>(sampleX) + cosHeading * static_cast<float>(sampleY);
                     const float worldX = centerX + northUpX * unitsPerPixel;
                     const float worldZ = centerZ - northUpY * unitsPerPixel;
                     const float u = ClampValue(worldX / REAL_MAP_WORLD_SIZE, 0.0f, 1.0f);
@@ -6823,6 +6931,7 @@ namespace
         const float centerZ = FixedToWorld(playerPosition.z);
         const float mapHeading = playerPosition.hasHeading ? playerPosition.headingRadians : 0.0f;
         AppendVisibleStaticPoiPoints(points, nearbyMarkers, visibleMapMarkers, centerX, centerZ, unitsPerPixel * static_cast<float>(radius) * STATIC_POI_DRAW_RADIUS_FACTOR);
+        LimitMinimapWorldPoints(points, centerX, centerZ);
 
         const bool hasRasterFrame = HasLoadedMinimapFrame();
         const int frameExtra = MinimapRasterFrameExtra(radius);
@@ -7025,6 +7134,9 @@ namespace
 
     void LogVulkanPresentInfo(void* queue, const void* presentInfo)
     {
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         const DWORD now = GetTickCount();
         if (now - g_lastVulkanPresentInfoTick < 5000)
             return;
@@ -7083,6 +7195,9 @@ namespace
 
     void LogVulkanSwapchainCreate(void* device, const VkSwapchainCreateInfoKHR* createInfo, void* swapchain, std::int32_t result)
     {
+        if (!g_debugLoggingEnabled.load())
+            return;
+
         const DWORD now = GetTickCount();
         if (now - g_lastVulkanSwapchainHookTick < 5000)
             return;
@@ -7405,6 +7520,9 @@ namespace
         {
             return;
         }
+
+        if (!g_debugLoggingEnabled.load())
+            return;
 
         const DWORD now = GetTickCount();
         if (now - g_lastVulkanSummaryTick < 5000)
