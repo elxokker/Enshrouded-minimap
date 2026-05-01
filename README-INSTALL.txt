@@ -1,4 +1,4 @@
-Enshrouded Minimap v0.4.44
+Enshrouded Minimap v0.4.45
 ==========================
 
 Integrated in-game minimap mod for Enshrouded using Shroudtopia.
@@ -31,7 +31,7 @@ Zip installation
 ----------------
 
 1. Close Enshrouded.
-2. Extract enshrouded-minimap-v0.4.44.zip.
+2. Extract enshrouded-minimap-v0.4.45.zip.
 3. Copy the full minimap_mod folder to:
 
    C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\mods\minimap_mod
@@ -73,3 +73,22 @@ delete, home, end, pageup, pagedown, backspace, and numpad-*.
 
 The mod reads these values directly and refreshes them every second while active.
 If the minimap is not loaded yet, start or restart the game after changing it.
+
+EML compatibility notes
+-----------------------
+
+This minimap is a native Shroudtopia mod. It is not an EML-native Lua mod and
+EML does not load minimap_mod.dll by itself.
+
+The release includes a no-op src/mod.lua and EML-neutral manifest fields so EML
+setups that scan every folder under mods/ do not treat minimap_mod as an
+incomplete Lua package.
+
+For mixed EML + Shroudtopia setups:
+
+- Keep Shroudtopia installed with winmm.dll and shroudtopia.dll.
+- Keep this mod at mods/minimap_mod.
+- If EML with dbghelp.dll crashes on client startup, try EML's dinput8.dll
+  proxy instead of dbghelp.dll.
+- Do not expect an EML-only setup to load the minimap DLL. Shroudtopia is still
+  required.
