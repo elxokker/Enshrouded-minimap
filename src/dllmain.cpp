@@ -14,6 +14,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -40,9 +41,36 @@ namespace
     constexpr std::size_t WAYPOINT_STATE_PTR_OFFSET = 0x10;
     constexpr std::size_t WAYPOINT_ARRAY_OFFSET = 0x2FD390;
     constexpr std::size_t WAYPOINT_COUNT_OFFSET = 0x2FD398;
+    // May-24-2026 client: verified live against the running game (custom-marker count
+    // incremented at this offset when the player placed a map marker).
+    constexpr std::size_t WAYPOINT_ARRAY_OFFSET_MAY24 = 0x3C128;
     constexpr std::size_t WAYPOINT_ENTRY_STRIDE = 0xF0;
+    constexpr std::size_t WAYPOINT_ENTRY_STRIDE_MAY24 = 0x80;
+    constexpr std::size_t WAYPOINT_ENTRY_POSITION_MAY24 = 0x10;
+    // May-24-2026 client: live player position triple inside the UI state (verified to
+    // track the player smoothly while moving).
+    constexpr std::size_t UI_STATE_PLAYER_POSITION_MAY24 = 0x1DCB8;
+    // May-24-2026 client: nearby/streamed marker array (float xyz at entry+0x0C).
+    constexpr std::size_t NEARBY_ARRAY_OFFSET_MAY24 = 0x8E8;
+    constexpr std::size_t NEARBY_ENTRY_STRIDE_MAY24 = 0x180;
+    constexpr std::size_t NEARBY_ENTRY_POS_FLOAT_MAY24 = 0x0C;
+    // May-24-2026 client: master world-map marker array — the same list the big map
+    // renders (POIs, placed flame altars, NPCs, multiplayer pings). Verified live:
+    // 66 entries matched the big map exactly, icon keys overlap the icon atlas.
+    constexpr std::size_t MASTER_MARKER_ARRAY_OFFSET_MAY24 = 0x1C100;
+    constexpr std::size_t MASTER_MARKER_STRIDE = 0x80;
+    constexpr std::size_t MASTER_MARKER_POS_OFFSET = 0x10;
+    constexpr std::size_t MASTER_MARKER_KEY_OFFSET = 0x30;
+    constexpr std::size_t MASTER_MARKER_MAX_ENTRIES = 512;
+    constexpr std::uint32_t MASTER_KEY_FLAME_ALTAR = 0xA447CBA3;
+    constexpr std::uint32_t MASTER_KEY_PLAYER_PING = 0x813080BC;
     constexpr std::size_t WAYPOINT_ENTRY_POSITION_OFFSET = 0x30;
     constexpr std::size_t WAYPOINT_ENTRY_ACTIVE_OFFSET = 0x48;
+    // May-24-2026 client: UI-state camera/anchor block shifted -0x300 (0x16158 -> 0x15E58),
+    // visible in local_player_ui_render_setup writes at [state+0x15E58..].
+    constexpr std::size_t UI_STATE_CAMERA_BLOCK_OLD = 0x16158;
+    constexpr std::size_t UI_STATE_CAMERA_BLOCK_NEW = 0x15E58;
+    constexpr std::size_t UI_STATE_BIG_OBJECT_PROBE = 0x15E00;
     constexpr std::size_t NEARBY_MARKER_ARRAY_OFFSET = 0x3698;
     constexpr std::size_t NEARBY_MARKER_COUNT_OFFSET = 0x36A0;
     constexpr std::size_t INPUT_MARKER_ARRAY_OFFSET = 0x18;
@@ -194,7 +222,8 @@ namespace
     struct WaypointsUiIterationRecord
     {
         void* unknown0 = nullptr;
-        void* unknown8 = nullptr;
+        // May-24-2026 client fills only two qwords here (iter record size 0x10): state is at +0x08.
+        std::uint8_t* stateNew = nullptr;
         std::uint8_t* state = nullptr;
         void* lookupContext = nullptr;
         void* waypointList = nullptr;
@@ -493,6 +522,16 @@ namespace
     struct VkSemaphoreCreateInfo
     {
         std::uint32_t sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        const void* pNext = nullptr;
+        std::uint32_t flags = 0;
+    };
+
+    constexpr std::uint32_t VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8;
+    constexpr std::uint32_t VK_FENCE_CREATE_SIGNALED_BIT = 1;
+
+    struct VkFenceCreateInfo
+    {
+        std::uint32_t sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         const void* pNext = nullptr;
         std::uint32_t flags = 0;
     };
@@ -874,6 +913,10 @@ namespace
     using CmdPushConstantsFn = void(__fastcall*)(void* commandBuffer, void* layout, std::uint32_t stageFlags, std::uint32_t offset, std::uint32_t size, const void* values);
     using CmdDrawFn = void(__fastcall*)(void* commandBuffer, std::uint32_t vertexCount, std::uint32_t instanceCount, std::uint32_t firstVertex, std::uint32_t firstInstance);
     using CreateSemaphoreFn = std::int32_t(__fastcall*)(void* device, const VkSemaphoreCreateInfo* createInfo, const void* allocator, void** semaphore);
+    using CreateFenceFn = std::int32_t(__fastcall*)(void* device, const VkFenceCreateInfo* createInfo, const void* allocator, void** fence);
+    using DestroyFenceFn = void(__fastcall*)(void* device, void* fence, const void* allocator);
+    using WaitForFencesFn = std::int32_t(__fastcall*)(void* device, std::uint32_t fenceCount, const void* const* fences, std::uint32_t waitAll, std::uint64_t timeout);
+    using ResetFencesFn = std::int32_t(__fastcall*)(void* device, std::uint32_t fenceCount, const void* const* fences);
     using DestroySemaphoreFn = void(__fastcall*)(void* device, void* semaphore, const void* allocator);
     using QueueSubmitFn = std::int32_t(__fastcall*)(void* queue, std::uint32_t submitCount, const VkSubmitInfo* submits, void* fence);
     using DeviceWaitIdleFn = std::int32_t(__fastcall*)(void* device);
@@ -952,6 +995,10 @@ namespace
         CmdDrawFn cmdDraw = nullptr;
         CreateSemaphoreFn createSemaphore = nullptr;
         DestroySemaphoreFn destroySemaphore = nullptr;
+        CreateFenceFn createFence = nullptr;
+        DestroyFenceFn destroyFence = nullptr;
+        WaitForFencesFn waitForFences = nullptr;
+        ResetFencesFn resetFences = nullptr;
         QueueSubmitFn queueSubmit = nullptr;
         DeviceWaitIdleFn deviceWaitIdle = nullptr;
 
@@ -975,6 +1022,10 @@ namespace
                 cmdClearAttachments != nullptr &&
                 createSemaphore != nullptr &&
                 destroySemaphore != nullptr &&
+                createFence != nullptr &&
+                destroyFence != nullptr &&
+                waitForFences != nullptr &&
+                resetFences != nullptr &&
                 queueSubmit != nullptr &&
                 deviceWaitIdle != nullptr;
         }
@@ -1030,6 +1081,7 @@ namespace
         std::vector<uintptr_t> framebuffers;
         std::vector<uintptr_t> commandBuffers;
         std::vector<uintptr_t> renderCompleteSemaphores;
+        std::vector<uintptr_t> commandFences;
         uintptr_t renderPass = 0;
         uintptr_t commandPool = 0;
         uintptr_t frameTextureImage = 0;
@@ -1131,7 +1183,7 @@ namespace
     ModMetaData g_metaData = {
         "minimap_mod",
         "Internal minimap data bridge for Enshrouded. No external overlay window.",
-        "0.4.46",
+        "0.4.46-fix17",
         "OpenAI + xoker",
         "0.0.3",
         true,
@@ -1217,6 +1269,9 @@ namespace
     std::atomic<bool> g_renderCameraFallbackEnabled{ true };
     std::atomic<bool> g_debugLoggingEnabled{ false };
     std::atomic<int> g_minimapMapSampleStep{ MINIMAP_DEFAULT_MAP_SAMPLE_STEP };
+    // 0..100: how far the minimap terrain is lifted toward the big map's light
+    // parchment look (0 = original dark satmap). Live-tunable via "map_light".
+    std::atomic<int> g_minimapMapLight{ 55 };
     std::atomic<int> g_minimapMaxDrawnPoints{ MINIMAP_DEFAULT_MAX_DRAWN_POINTS };
     DWORD g_lastConfigPollTick = 0;
     DWORD g_lastSessionLogPollTick = 0;
@@ -1522,25 +1577,37 @@ namespace
             maxIconsSource = "shroudtopia_config_api";
         }
 
+        std::string configuredMapLight = "55";
+        std::string mapLightSource = "default";
+        if (!TryReadMinimapConfigStringFromFile(modContext, "map_light", configuredMapLight, mapLightSource) &&
+            modContext != nullptr && modContext->config.GetString)
+        {
+            configuredMapLight = modContext->config.GetString("minimap_mod", "map_light", configuredMapLight);
+            mapLightSource = "shroudtopia_config_api";
+        }
+
         const MinimapPlacement placement = ParseMinimapPlacement(configuredPosition);
         const int toggleKey = ParseMinimapToggleKey(configuredToggleKey);
         const bool renderFallback = ParseConfigBoolean(configuredRenderFallback, true);
         const bool debugLogging = ParseConfigBoolean(configuredDebugLogging, false);
         const int mapSampleStep = ParseConfigInteger(configuredMapSampleStep, MINIMAP_DEFAULT_MAP_SAMPLE_STEP, 1, 4);
         const int maxIcons = ParseConfigInteger(configuredMaxIcons, MINIMAP_DEFAULT_MAX_DRAWN_POINTS, 8, 128);
+        const int mapLight = ParseConfigInteger(configuredMapLight, 55, 0, 100);
         const int previous = g_minimapPlacement.exchange(static_cast<int>(placement));
         const int previousToggleKey = g_minimapToggleKey.exchange(toggleKey);
         const bool previousRenderFallback = g_renderCameraFallbackEnabled.exchange(renderFallback);
         const bool previousDebugLogging = g_debugLoggingEnabled.exchange(debugLogging);
         const int previousMapSampleStep = g_minimapMapSampleStep.exchange(mapSampleStep);
         const int previousMaxIcons = g_minimapMaxDrawnPoints.exchange(maxIcons);
+        const int previousMapLight = g_minimapMapLight.exchange(mapLight);
         if (!forceLog &&
             previous == static_cast<int>(placement) &&
             previousToggleKey == toggleKey &&
             previousRenderFallback == renderFallback &&
             previousDebugLogging == debugLogging &&
             previousMapSampleStep == mapSampleStep &&
-            previousMaxIcons == maxIcons)
+            previousMaxIcons == maxIcons &&
+            previousMapLight == mapLight)
         {
             return;
         }
@@ -1560,7 +1627,9 @@ namespace
             << " | map_sample_step=" << mapSampleStep
             << " | map_sample_step_source=" << mapSampleStepSource
             << " | max_icons=" << maxIcons
-            << " | max_icons_source=" << maxIconsSource;
+            << " | max_icons_source=" << maxIconsSource
+            << " | map_light=" << mapLight
+            << " | map_light_source=" << mapLightSource;
         Log(oss.str());
     }
 
@@ -2359,6 +2428,10 @@ namespace
             return "ui_local30";
         case 3:
             return "ui_state_camera";
+        case 4:
+            return "ui_state_camera_new";
+        case 5:
+            return "ui_state_position_exact";
         case 20:
             return "cached_client_camera";
         case 21:
@@ -2371,6 +2444,14 @@ namespace
             return "render_context_camera";
         case 25:
             return "render_child_camera";
+        case 26:
+            return "ui_state_full_camera_new";
+        case 27:
+            return "ui_state_full_camera_old";
+        case 28:
+            return "ui_source_full_camera";
+        case 29:
+            return "signature_scan_camera";
         default:
             return "unknown";
         }
@@ -2412,12 +2493,16 @@ namespace
 
     bool IsAcceptablePlayerPositionCandidate(float worldX, float worldZ, float& outScore)
     {
+        // Reject axis-edge decoys such as (0, 0, 256.079): real player positions sit
+        // well inside the map square on both axes.
+        if (worldX < 1.0f || worldZ < 1.0f)
+            return false;
+
         const bool hasAnchor = TryScoreAgainstWorldAnchors(worldX, worldZ, outScore);
         if (hasAnchor)
             return outScore <= 12000.0f * 12000.0f;
 
-        if (worldX < -512.0f || worldZ < -512.0f ||
-            worldX > REAL_MAP_WORLD_SIZE + 512.0f ||
+        if (worldX > REAL_MAP_WORLD_SIZE + 512.0f ||
             worldZ > REAL_MAP_WORLD_SIZE + 512.0f)
         {
             return false;
@@ -2482,11 +2567,66 @@ namespace
         return captured;
     }
 
+    CapturedPlayerPosition g_lastExactPosition{};
+    float g_lastHeadingRadians = 0.0f;
+    DWORD g_lastHeadingTick = 0;
+
+    float WrapAngleRadians(float angle)
+    {
+        while (angle > 3.14159265f)
+            angle -= 6.28318531f;
+        while (angle < -3.14159265f)
+            angle += 6.28318531f;
+        return angle;
+    }
+
     void PublishPlayerPosition(const CapturedPlayerPosition& position)
     {
         {
             std::lock_guard<std::mutex> lock(g_playerPositionMutex);
-            g_playerPosition = position;
+
+            // Remember the newest exact UI-state position separately: when the camera
+            // hold takes over the main slot, the exact feed keeps flowing here.
+            if (position.channel == 5)
+                g_lastExactPosition = position;
+
+            CapturedPlayerPosition merged = position;
+
+            if (position.hasHeading && position.channel >= 20)
+            {
+                // Camera feed: anchor the map center on the exact player-position feed
+                // when it is fresh and agrees (the camera hovers within ~30 units), and
+                // keep the camera's heading. Heading smoothing happens at draw time.
+                if (g_lastExactPosition.valid &&
+                    position.lastUpdateTick - g_lastExactPosition.lastUpdateTick < 1500)
+                {
+                    const float anchorDx = FixedToWorld(g_lastExactPosition.x) - FixedToWorld(position.x);
+                    const float anchorDz = FixedToWorld(g_lastExactPosition.z) - FixedToWorld(position.z);
+                    if (anchorDx * anchorDx + anchorDz * anchorDz < 150.0f * 150.0f)
+                    {
+                        merged.x = g_lastExactPosition.x;
+                        merged.y = g_lastExactPosition.y;
+                        merged.z = g_lastExactPosition.z;
+                    }
+                }
+                g_lastHeadingRadians = position.headingRadians;
+                g_lastHeadingTick = position.lastUpdateTick;
+                g_playerPosition = merged;
+            }
+            else
+            {
+                // Heading-less feed (exact position): update the center but never zero
+                // the heading — carry the last camera heading forward while it is still
+                // recent (tracked by its own timestamp so the exact feed refreshing every
+                // frame can't keep a dead heading alive), otherwise the map snaps back to
+                // north between camera samples and wobbles.
+                if (g_lastHeadingTick != 0 && position.lastUpdateTick - g_lastHeadingTick < 2000)
+                {
+                    merged.hasHeading = true;
+                    merged.headingRadians = g_lastHeadingRadians;
+                }
+                g_playerPosition = merged;
+            }
         }
 
         NoteWorldData("player_position");
@@ -2523,27 +2663,93 @@ namespace
         return true;
     }
 
-    bool TryCapturePlayerPositionFromUiRecord(const UiRenderSetupIterationRecord& record)
-    {
-        PlayerPositionCandidate best{};
-        TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.source), 1, 0x340, best);
-        TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.local30), 2, 0x40, best);
-        TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.state + 0x16158), 3, 0x40, best);
+    bool TryCaptureCameraPositionFromBlock(uintptr_t base, std::uint32_t channel, std::size_t scanBytes, PlayerPositionCandidate& best);
+    bool PublishBestPlayerPosition(const PlayerPositionCandidate& best);
+    bool IsLikelyRuntimePointer(uintptr_t value);
+    bool IsOnMapWorldPosition(float x, float y, float z);
+    std::uint8_t* ResolveWaypointsUiState(const WaypointsUiIterationRecord& record);
 
-        if (!best.valid)
+    // Direct read of the live player position verified against the running May-24-2026
+    // client (state+0x1DCB8 tracked the player smoothly during live memory probing).
+    bool TryPublishExactUiStatePosition(std::uint8_t* state)
+    {
+        if (state == nullptr)
             return false;
 
+        std::int64_t x = 0;
+        std::int64_t y = 0;
+        std::int64_t z = 0;
+        if (!SafeReadValue(reinterpret_cast<uintptr_t>(state + UI_STATE_PLAYER_POSITION_MAY24 + 0x00), x) ||
+            !SafeReadValue(reinterpret_cast<uintptr_t>(state + UI_STATE_PLAYER_POSITION_MAY24 + 0x08), y) ||
+            !SafeReadValue(reinterpret_cast<uintptr_t>(state + UI_STATE_PLAYER_POSITION_MAY24 + 0x10), z))
+        {
+            return false;
+        }
+
+        if (!IsOnMapWorldPosition(FixedToWorld(x), FixedToWorld(y), FixedToWorld(z)))
+            return false;
+
+        // The exact slot freezes far away from the player's base area. When a live
+        // camera feed exists and strongly disagrees, the frozen value must not be
+        // published at all (otherwise the map snaps back home whenever the camera
+        // hold pauses for a rescan).
+        {
+            std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+            if (g_playerPosition.valid && g_playerPosition.hasHeading && g_playerPosition.channel == 29 &&
+                GetTickCount() - g_playerPosition.lastUpdateTick < 5000)
+            {
+                const float dx = FixedToWorld(x) - FixedToWorld(g_playerPosition.x);
+                const float dz = FixedToWorld(z) - FixedToWorld(g_playerPosition.z);
+                if (dx * dx + dz * dz > 150.0f * 150.0f)
+                    return false;
+            }
+        }
+
         CapturedPlayerPosition position{};
-        position.x = best.x;
-        position.y = best.y;
-        position.z = best.z;
-        position.source = best.source;
-        position.offset = best.offset;
-        position.channel = best.channel;
+        position.x = x;
+        position.y = y;
+        position.z = z;
+        position.source = reinterpret_cast<uintptr_t>(state);
+        position.offset = static_cast<std::uint32_t>(UI_STATE_PLAYER_POSITION_MAY24);
+        position.channel = 5;
         position.lastUpdateTick = GetTickCount();
         position.valid = true;
         PublishPlayerPosition(position);
         return true;
+    }
+
+    bool TryCapturePlayerPositionFromUiRecord(const UiRenderSetupIterationRecord& record)
+    {
+        // Heading-bearing camera blocks first (full signature incl. quaternion/fov).
+        PlayerPositionCandidate best{};
+        TryCaptureCameraPositionFromBlock(reinterpret_cast<uintptr_t>(record.state + UI_STATE_CAMERA_BLOCK_NEW - 0x40), 26, 0x1C0, best);
+        TryCaptureCameraPositionFromBlock(reinterpret_cast<uintptr_t>(record.state + UI_STATE_CAMERA_BLOCK_OLD - 0x40), 27, 0x1C0, best);
+        TryCaptureCameraPositionFromBlock(reinterpret_cast<uintptr_t>(record.source), 28, 0x340, best);
+
+        if (!best.valid)
+        {
+            // Exact known offset beats heuristic block scans (which can latch onto
+            // static decoys like the (0, 0, 256.079) block at the old camera offset).
+            if (TryPublishExactUiStatePosition(record.state))
+                return true;
+
+            TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.source), 1, 0x340, best);
+            TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.local30), 2, 0x40, best);
+            TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.state + UI_STATE_CAMERA_BLOCK_OLD), 3, 0x40, best);
+            TryCapturePlayerPositionFromBlock(reinterpret_cast<uintptr_t>(record.state + UI_STATE_CAMERA_BLOCK_NEW), 4, 0x40, best);
+        }
+
+        if (!best.valid)
+            return false;
+
+        if (best.hasHeading)
+        {
+            const uintptr_t cameraAddress = best.source + best.offset;
+            if (IsLikelyRuntimePointer(cameraAddress))
+                g_playerCameraAddress.store(cameraAddress);
+        }
+
+        return PublishBestPlayerPosition(best);
     }
 
     bool IsLikelyRuntimePointer(uintptr_t value)
@@ -2573,9 +2779,51 @@ namespace
         return true;
     }
 
+    // Static decoy blocks can pass the camera signature but never move (seen on the
+    // May-24-2026 client: a block frozen at world 132.238/768.084/132.238). Once a cached
+    // camera is detected as frozen it is banned for a while so rescans skip it.
+    constexpr DWORD CAMERA_FROZEN_EVICT_MS = 20000;
+    constexpr DWORD CAMERA_BAN_MS = 60000;
+
+    std::mutex g_cameraBanMutex;
+    struct CameraBanEntry
+    {
+        uintptr_t address = 0;
+        DWORD tick = 0;
+    };
+    CameraBanEntry g_cameraBans[4] = {};
+    std::size_t g_cameraBanCursor = 0;
+    CapturedPlayerPosition g_lastCachedCameraSample{};
+    DWORD g_cachedCameraLastChangeTick = 0;
+
+    bool IsCameraAddressBanned(uintptr_t address)
+    {
+        const DWORD now = GetTickCount();
+        std::lock_guard<std::mutex> lock(g_cameraBanMutex);
+        for (const CameraBanEntry& entry : g_cameraBans)
+        {
+            if (entry.address == address && entry.address != 0 && now - entry.tick < CAMERA_BAN_MS)
+                return true;
+        }
+        return false;
+    }
+
+    void BanCameraAddress(uintptr_t address)
+    {
+        if (address == 0)
+            return;
+
+        std::lock_guard<std::mutex> lock(g_cameraBanMutex);
+        g_cameraBans[g_cameraBanCursor] = { address, GetTickCount() };
+        g_cameraBanCursor = (g_cameraBanCursor + 1) % (sizeof(g_cameraBans) / sizeof(g_cameraBans[0]));
+    }
+
     bool TryCaptureClientCameraAt(uintptr_t cameraAddress, uintptr_t source, std::uint32_t offset, std::uint32_t channel, PlayerPositionCandidate& best)
     {
         if (!IsLikelyRuntimePointer(cameraAddress))
+            return false;
+
+        if (IsCameraAddressBanned(cameraAddress))
             return false;
 
         std::int64_t x = 0;
@@ -2700,6 +2948,18 @@ namespace
 
     bool TryRefreshPlayerPositionFromCachedCamera()
     {
+        {
+            // While the background camera hold is feeding fresh heading updates, the
+            // per-frame read is pointless: on the May-24-2026 client the camera block
+            // reads as zeroes at the fixed points of the frame where our hooks run.
+            std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+            if (g_playerPosition.valid && g_playerPosition.hasHeading && g_playerPosition.channel == 29 &&
+                GetTickCount() - g_playerPosition.lastUpdateTick < 2000)
+            {
+                return true;
+            }
+        }
+
         const uintptr_t cachedCamera = g_playerCameraAddress.load();
         if (!IsLikelyRuntimePointer(cachedCamera))
             return false;
@@ -2707,8 +2967,71 @@ namespace
         PlayerPositionCandidate best{};
         if (!TryCaptureClientCameraAt(cachedCamera, cachedCamera, 0, 20, best))
         {
+            if (g_debugLoggingEnabled.load())
+            {
+                static std::atomic<DWORD> lastRejectLogTick{ 0 };
+                const DWORD now = GetTickCount();
+                const DWORD last = lastRejectLogTick.load();
+                if (last == 0 || now - last >= 5000)
+                {
+                    lastRejectLogTick.store(now);
+                    std::int64_t rawPos[3] = {};
+                    float rawFloats[9] = {};
+                    const bool posOk = SafeRead(cachedCamera, rawPos, sizeof(rawPos));
+                    const bool floatsOk = SafeRead(cachedCamera + 0x18, rawFloats, sizeof(rawFloats));
+                    std::ostringstream oss;
+                    oss << "[Minimap] cached camera rejected | addr=" << Hex(cachedCamera)
+                        << " | pos_read=" << (posOk ? "ok" : "fail")
+                        << " | floats_read=" << (floatsOk ? "ok" : "fail");
+                    if (posOk)
+                    {
+                        oss << " | world=(" << FixedToWorld(rawPos[0]) << ", "
+                            << FixedToWorld(rawPos[1]) << ", " << FixedToWorld(rawPos[2]) << ")";
+                    }
+                    if (floatsOk)
+                    {
+                        const float quatNormSq = rawFloats[0] * rawFloats[0] + rawFloats[1] * rawFloats[1] +
+                            rawFloats[2] * rawFloats[2] + rawFloats[3] * rawFloats[3];
+                        oss << " | quat_norm_sq=" << quatNormSq
+                            << " | dist=" << rawFloats[4] << " | fov=" << rawFloats[5]
+                            << " | aspect=" << rawFloats[6] << " | near=" << rawFloats[7]
+                            << " | far=" << rawFloats[8];
+                    }
+                    Log(oss.str());
+                }
+            }
             g_playerCameraAddress.store(0);
             return false;
+        }
+
+        // Evict decoy blocks: a real camera changes (position or orientation) over time.
+        {
+            const DWORD now = GetTickCount();
+            std::lock_guard<std::mutex> lock(g_cameraBanMutex);
+            const bool sameSource = g_lastCachedCameraSample.source == cachedCamera;
+            const bool sameData =
+                sameSource &&
+                g_lastCachedCameraSample.x == best.x &&
+                g_lastCachedCameraSample.y == best.y &&
+                g_lastCachedCameraSample.z == best.z &&
+                g_lastCachedCameraSample.headingRadians == best.headingRadians;
+            if (!sameData)
+            {
+                g_lastCachedCameraSample.source = cachedCamera;
+                g_lastCachedCameraSample.x = best.x;
+                g_lastCachedCameraSample.y = best.y;
+                g_lastCachedCameraSample.z = best.z;
+                g_lastCachedCameraSample.headingRadians = best.headingRadians;
+                g_cachedCameraLastChangeTick = now;
+            }
+            else if (now - g_cachedCameraLastChangeTick > CAMERA_FROZEN_EVICT_MS)
+            {
+                g_cameraBans[g_cameraBanCursor] = { cachedCamera, now };
+                g_cameraBanCursor = (g_cameraBanCursor + 1) % (sizeof(g_cameraBans) / sizeof(g_cameraBans[0]));
+                g_playerCameraAddress.store(0);
+                Log("[Minimap] cached camera frozen for 20s; banning block and rescanning");
+                return false;
+            }
         }
 
         return PublishBestPlayerPosition(best);
@@ -2787,6 +3110,368 @@ namespace
         return PublishBestPlayerPosition(best);
     }
 
+    // Full-process camera hunt for the May-24-2026 client, where the live camera block
+    // (fixed pos + quaternion + dist/fov/aspect/near/far) lives in a heap allocation that
+    // is not reachable from any iterator record. Verified live: such a block exists and
+    // its quaternion tracks mouse look. Runs on a background thread, promotes only
+    // candidates that actually change between two samples (liveness), so static decoys
+    // are never promoted.
+    std::atomic<bool> g_cameraScanBusy{ false };
+    std::atomic<DWORD> g_lastCameraSigScanTick{ 0 };
+
+    void RunCameraSignatureScan()
+    {
+        constexpr float ASPECT_LO = 1.15f;
+        constexpr float ASPECT_HI = 2.70f;
+        constexpr std::size_t CHUNK = 0x10000;
+        constexpr std::size_t CAMERA_BYTES = 0x40;
+
+        std::vector<uintptr_t> candidates;
+        std::vector<std::uint8_t> buffer(CHUNK);
+        std::uint64_t scannedBytes = 0;
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        uintptr_t address = 0x10000;
+        while (address < 0x00007FFFFFFF0000ULL && candidates.size() < 64)
+        {
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0)
+                break;
+
+            const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            const std::size_t regionSize = mbi.RegionSize;
+            const bool scannable =
+                mbi.State == MEM_COMMIT &&
+                mbi.Type == MEM_PRIVATE &&
+                (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_EXECUTE_READWRITE) &&
+                regionSize <= 0x40000000;
+
+            if (scannable)
+            {
+                std::size_t pos = 0;
+                while (pos < regionSize && candidates.size() < 64)
+                {
+                    const std::size_t chunk = MinValue<std::size_t>(CHUNK, regionSize - pos);
+                    if (chunk >= CAMERA_BYTES && SafeRead(regionBase + pos, buffer.data(), chunk))
+                    {
+                        scannedBytes += chunk;
+                        for (std::size_t offset = 0; offset + CAMERA_BYTES <= chunk; offset += sizeof(std::uint64_t))
+                        {
+                            float aspect = 0.0f;
+                            float fov = 0.0f;
+                            std::memcpy(&aspect, buffer.data() + offset + 0x30, sizeof(aspect));
+                            if (!(aspect >= ASPECT_LO && aspect <= ASPECT_HI))
+                                continue;
+
+                            std::memcpy(&fov, buffer.data() + offset + 0x2C, sizeof(fov));
+                            if (!(fov >= 0.10f && fov <= 3.20f))
+                                continue;
+
+                            // Validate from the bytes already read: re-reading the block
+                            // live can land in the zeroed frame phase and silently drop
+                            // real candidates (this caused minutes-long rotation delays).
+                            const std::uint8_t* block = buffer.data() + offset;
+                            std::int64_t bx = 0;
+                            std::int64_t by = 0;
+                            std::int64_t bz = 0;
+                            std::memcpy(&bx, block + 0x00, sizeof(bx));
+                            std::memcpy(&by, block + 0x08, sizeof(by));
+                            std::memcpy(&bz, block + 0x10, sizeof(bz));
+                            const float wx = FixedToWorld(bx);
+                            const float wy = FixedToWorld(by);
+                            const float wz = FixedToWorld(bz);
+                            if (!IsPlausibleWorldPosition(wx, wy, wz))
+                                continue;
+
+                            float quat[4] = {};
+                            std::memcpy(quat, block + 0x18, sizeof(quat));
+                            const float quatNormSq = quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3];
+                            if (!std::isfinite(quatNormSq) || quatNormSq < 0.35f || quatNormSq > 1.75f)
+                                continue;
+
+                            float dist = 0.0f;
+                            float nearPlane = 0.0f;
+                            float farPlane = 0.0f;
+                            std::memcpy(&dist, block + 0x28, sizeof(dist));
+                            std::memcpy(&nearPlane, block + 0x34, sizeof(nearPlane));
+                            std::memcpy(&farPlane, block + 0x38, sizeof(farPlane));
+                            if (!std::isfinite(dist) || dist < 0.0f || dist > 512.0f ||
+                                !std::isfinite(nearPlane) || nearPlane < 0.0f || nearPlane > 32.0f ||
+                                !std::isfinite(farPlane) || farPlane <= nearPlane + 1.0f || farPlane > 1e7f)
+                            {
+                                continue;
+                            }
+
+                            candidates.push_back(regionBase + pos + offset);
+                        }
+                    }
+
+                    // Overlap chunk edges so a block straddling the boundary is still seen.
+                    pos += chunk >= CHUNK ? CHUNK - CAMERA_BYTES : chunk;
+                }
+            }
+
+            address = regionBase + regionSize;
+        }
+
+        struct CameraSample
+        {
+            std::int64_t position[3] = {};
+            float quaternion[4] = {};
+            bool valid = false;
+        };
+
+        const auto sampleCamera = [](uintptr_t cameraAddress)
+        {
+            CameraSample sample{};
+            sample.valid =
+                SafeRead(cameraAddress, sample.position, sizeof(sample.position)) &&
+                SafeRead(cameraAddress + 0x18, sample.quaternion, sizeof(sample.quaternion));
+            return sample;
+        };
+
+        // The player's own position (exact UI-state feed) anchors candidate selection:
+        // the real camera always hovers within a couple hundred units of the player,
+        // while stale snapshot copies elsewhere in the heap do not.
+        float playerX = 0.0f;
+        float playerZ = 0.0f;
+        bool havePlayer = false;
+        {
+            std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+            if (g_playerPosition.valid && GetTickCount() - g_playerPosition.lastUpdateTick < 5000)
+            {
+                playerX = FixedToWorld(g_playerPosition.x);
+                playerZ = FixedToWorld(g_playerPosition.z);
+                havePlayer = true;
+            }
+        }
+
+        const auto nearPlayer = [&](const CameraSample& sample)
+        {
+            if (!havePlayer)
+                return true;
+            const float dx = static_cast<float>(sample.position[0] * FIXED_32_32_TO_WORLD) - playerX;
+            const float dz = static_cast<float>(sample.position[2] * FIXED_32_32_TO_WORLD) - playerZ;
+            return dx * dx + dz * dz < 200.0f * 200.0f;
+        };
+
+        std::vector<CameraSample> firstSamples;
+        firstSamples.reserve(candidates.size());
+        for (uintptr_t candidate : candidates)
+            firstSamples.push_back(sampleCamera(candidate));
+
+        Sleep(400);
+
+        std::vector<uintptr_t> liveCandidates;
+        std::vector<uintptr_t> nearCandidates;
+        uintptr_t promoted = 0;
+        uintptr_t promotedAnyChange = 0;
+        for (std::size_t index = 0; index < candidates.size(); ++index)
+        {
+            if (!firstSamples[index].valid)
+                continue;
+
+            // Near-player filtering moved to the hold loop: async samples here can hit
+            // the zeroed frame phase and reject the real camera by mistake.
+            nearCandidates.push_back(candidates[index]);
+
+            const CameraSample second = sampleCamera(candidates[index]);
+            if (!second.valid)
+                continue;
+
+            const bool quatChanged =
+                std::memcmp(second.quaternion, firstSamples[index].quaternion, sizeof(second.quaternion)) != 0;
+            const bool posChanged =
+                std::memcmp(second.position, firstSamples[index].position, sizeof(second.position)) != 0;
+
+            // A rotating quaternion is the strongest signal of the live view camera;
+            // transient copies get written once and then freeze.
+            if (quatChanged)
+            {
+                liveCandidates.insert(liveCandidates.begin(), candidates[index]);
+                if (promoted == 0)
+                    promoted = candidates[index];
+            }
+            else if (posChanged)
+            {
+                liveCandidates.push_back(candidates[index]);
+                if (promotedAnyChange == 0)
+                    promotedAnyChange = candidates[index];
+            }
+        }
+
+        if (promoted == 0)
+            promoted = promotedAnyChange;
+
+        // Multiplayer: other players' cameras also live in memory near ours. Prefer the
+        // live candidate closest to the local player's exact position so the map does
+        // not lock onto a remote player's view (which oscillated the heading when a
+        // second player looked around). Order liveCandidates by that distance too, so
+        // the hold loop's fallbacks stay local-first.
+        if (havePlayer && !liveCandidates.empty())
+        {
+            const auto distToPlayer = [&](uintptr_t addr)
+            {
+                const CameraSample s = sampleCamera(addr);
+                if (!s.valid)
+                    return 1e30f;
+                const float dx = static_cast<float>(s.position[0] * FIXED_32_32_TO_WORLD) - playerX;
+                const float dz = static_cast<float>(s.position[2] * FIXED_32_32_TO_WORLD) - playerZ;
+                return dx * dx + dz * dz;
+            };
+            std::sort(liveCandidates.begin(), liveCandidates.end(), [&](uintptr_t a, uintptr_t b)
+            {
+                return distToPlayer(a) < distToPlayer(b);
+            });
+            promoted = liveCandidates.front();
+        }
+
+        // If nothing moved during the short probe (player standing still, not turning),
+        // keep watching the near-player candidates for a while instead of giving up:
+        // the moment the player rotates the view, the real camera's quaternion changes
+        // and it gets promoted immediately. This removes the minutes-long wait for a
+        // scan to happen to coincide with camera movement.
+        if (liveCandidates.empty() && !nearCandidates.empty())
+        {
+            std::vector<CameraSample> watchSamples;
+            watchSamples.reserve(nearCandidates.size());
+            for (uintptr_t candidate : nearCandidates)
+                watchSamples.push_back(sampleCamera(candidate));
+
+            const DWORD watchStart = GetTickCount();
+            while (GetTickCount() - watchStart < 45000 && g_worldSessionReady.load())
+            {
+                Sleep(200);
+                for (std::size_t index = 0; index < nearCandidates.size(); ++index)
+                {
+                    const CameraSample current = sampleCamera(nearCandidates[index]);
+                    if (!current.valid || !watchSamples[index].valid)
+                        continue;
+
+                    // Any change counts: walking moves the camera even without mouse
+                    // look, so acquisition happens within the player's first steps. The
+                    // hold loop's near-player and liveness checks weed out impostors.
+                    if (std::memcmp(current.quaternion, watchSamples[index].quaternion, sizeof(current.quaternion)) != 0 ||
+                        std::memcmp(current.position, watchSamples[index].position, sizeof(current.position)) != 0)
+                    {
+                        promoted = nearCandidates[index];
+                        liveCandidates.push_back(promoted);
+                        break;
+                    }
+                }
+                if (promoted != 0)
+                    break;
+            }
+        }
+
+        if (promoted != 0)
+            g_playerCameraAddress.store(promoted);
+
+        std::ostringstream oss;
+        oss << "[Minimap] camera signature scan"
+            << " | scanned=" << (scannedBytes >> 20) << "MB"
+            << " | candidates=" << candidates.size()
+            << " | live=" << liveCandidates.size()
+            << " | near_player_anchor=" << (havePlayer ? "yes" : "no")
+            << " | promoted=" << Hex(promoted);
+        Log(oss.str());
+
+        // Some blocks that pass the signature check are per-frame scratch buffers: the
+        // game rewrites them several times per frame, so reads from the fixed per-frame
+        // hooks land on garbage even though asynchronous reads (like this thread's)
+        // often see a valid camera. Instead of relying on the frame hooks, keep holding
+        // the promoted candidates from this thread and publish every successful
+        // asynchronous read; fall over to the next candidate when one stops validating.
+        const DWORD holdStart = GetTickCount();
+        std::size_t candidateIndex = 0;
+        DWORD lastSuccessTick = GetTickCount();
+        DWORD lastRotateTick = GetTickCount();
+        std::uint32_t publishes = 0;
+        while (!liveCandidates.empty() && GetTickCount() - holdStart < 300000 && g_worldSessionReady.load())
+        {
+            const DWORD now = GetTickCount();
+            if (now - lastSuccessTick > 10000)
+                break;
+
+            const uintptr_t cameraAddress = liveCandidates[candidateIndex % liveCandidates.size()];
+            PlayerPositionCandidate probe{};
+            if (TryCaptureClientCameraAt(cameraAddress, cameraAddress, 0, 29, probe))
+            {
+                // The local view camera sits right on the local player; a valid block
+                // offset from the exact position is another player's camera (multiplayer)
+                // — rotate to the next candidate. Tight leash so a teammate standing a
+                // few tens of metres away can't hijack the heading.
+                bool nearPlayerNow = true;
+                {
+                    std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+                    if (g_lastExactPosition.valid && GetTickCount() - g_lastExactPosition.lastUpdateTick < 3000)
+                    {
+                        const float dx = FixedToWorld(probe.x) - FixedToWorld(g_lastExactPosition.x);
+                        const float dz = FixedToWorld(probe.z) - FixedToWorld(g_lastExactPosition.z);
+                        nearPlayerNow = dx * dx + dz * dz < 90.0f * 90.0f;
+                    }
+                }
+
+                // Guard against half-written scratch data: the block must read back the
+                // same position on an immediate second read before we trust it.
+                std::int64_t verify[3] = {};
+                if (nearPlayerNow &&
+                    SafeRead(cameraAddress, verify, sizeof(verify)) &&
+                    verify[0] == probe.x && verify[1] == probe.y && verify[2] == probe.z)
+                {
+                    g_playerCameraAddress.store(cameraAddress);
+                    PublishBestPlayerPosition(probe);
+                    ++publishes;
+                    lastSuccessTick = now;
+                }
+            }
+            else if (now - lastRotateTick > 3000)
+            {
+                ++candidateIndex;
+                lastRotateTick = now;
+            }
+
+            Sleep(8);
+        }
+
+        if (publishes != 0)
+        {
+            std::ostringstream holdLog;
+            holdLog << "[Minimap] camera hold finished | publishes=" << publishes
+                << " | held_for_ms=" << (GetTickCount() - holdStart);
+            Log(holdLog.str());
+        }
+    }
+
+    void MaybeStartCameraSignatureScan()
+    {
+        if (!g_worldSessionReady.load())
+            return;
+
+        {
+            std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+            if (g_playerPosition.valid && g_playerPosition.hasHeading &&
+                GetTickCount() - g_playerPosition.lastUpdateTick < 5000)
+            {
+                return;
+            }
+        }
+
+        const DWORD now = GetTickCount();
+        const DWORD last = g_lastCameraSigScanTick.load();
+        if (last != 0 && now - last < 7000)
+            return;
+
+        if (g_cameraScanBusy.exchange(true))
+            return;
+
+        g_lastCameraSigScanTick.store(now);
+        std::thread([]()
+        {
+            RunCameraSignatureScan();
+            g_cameraScanBusy.store(false);
+        }).detach();
+    }
+
     bool TryCapturePlayerCameraFromWaypointRecord(const WaypointsUiIterationRecord& record)
     {
         if (TryRefreshPlayerPositionFromCachedCamera())
@@ -2801,7 +3486,7 @@ namespace
         PlayerPositionCandidate best{};
         const std::array<uintptr_t, 6> roots = {
             reinterpret_cast<uintptr_t>(record.unknown0),
-            reinterpret_cast<uintptr_t>(record.unknown8),
+            reinterpret_cast<uintptr_t>(record.stateNew),
             reinterpret_cast<uintptr_t>(record.state),
             reinterpret_cast<uintptr_t>(record.lookupContext),
             reinterpret_cast<uintptr_t>(record.waypointList),
@@ -2810,6 +3495,15 @@ namespace
 
         for (uintptr_t root : roots)
             ScanCameraRoot(root, best);
+
+        // Direct probe of the known UI-state camera block (both layouts) — the generic
+        // root scans only cover the first bytes of the state object and cannot reach it.
+        std::uint8_t* uiState = ResolveWaypointsUiState(record);
+        if (uiState != nullptr)
+        {
+            TryCaptureCameraPositionFromBlock(reinterpret_cast<uintptr_t>(uiState + UI_STATE_CAMERA_BLOCK_NEW - 0x40), 26, 0x1C0, best);
+            TryCaptureCameraPositionFromBlock(reinterpret_cast<uintptr_t>(uiState + UI_STATE_CAMERA_BLOCK_OLD - 0x40), 27, 0x1C0, best);
+        }
 
         if (!best.valid)
             return false;
@@ -2936,6 +3630,146 @@ namespace
         }
     }
 
+    bool TryReadNearbyMarkerFloatEntry(uintptr_t entry, CapturedNearbyMarker& marker)
+    {
+        std::uint8_t buffer[0x28] = {};
+        if (!SafeRead(entry, buffer, sizeof(buffer)))
+            return false;
+
+        float fx = 0.0f;
+        float fy = 0.0f;
+        float fz = 0.0f;
+        std::memcpy(&fx, buffer + NEARBY_ENTRY_POS_FLOAT_MAY24 + 0x0, sizeof(fx));
+        std::memcpy(&fy, buffer + NEARBY_ENTRY_POS_FLOAT_MAY24 + 0x4, sizeof(fy));
+        std::memcpy(&fz, buffer + NEARBY_ENTRY_POS_FLOAT_MAY24 + 0x8, sizeof(fz));
+        if (!std::isfinite(fx) || !std::isfinite(fy) || !std::isfinite(fz) || !IsOnMapWorldPosition(fx, fy, fz))
+            return false;
+
+        std::memcpy(marker.raw, buffer, sizeof(marker.raw));
+        marker.x = WorldToFixed(fx);
+        marker.y = WorldToFixed(fy);
+        marker.z = WorldToFixed(fz);
+        marker.kind = 1;
+        marker.hasWorldPosition = true;
+        return true;
+    }
+
+    void AppendNearbyMarkersFromStateMay24(std::uint8_t* state, std::vector<CapturedNearbyMarker>& markers)
+    {
+        std::uint8_t* entries = nullptr;
+        std::uint64_t count = 0;
+        if (!SafeReadValue(reinterpret_cast<uintptr_t>(state + NEARBY_ARRAY_OFFSET_MAY24), entries) ||
+            !SafeReadValue(reinterpret_cast<uintptr_t>(state + NEARBY_ARRAY_OFFSET_MAY24 + 0x08), count))
+        {
+            return;
+        }
+
+        if (!IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries)) || count == 0 || count > NEARBY_MARKER_MAX_ENTRIES)
+            return;
+
+        const std::uint64_t limitedCount = MinValue<std::uint64_t>(count, 96);
+        markers.reserve(markers.size() + static_cast<std::size_t>(limitedCount));
+        for (std::uint64_t index = 0; index < limitedCount; ++index)
+        {
+            CapturedNearbyMarker marker{};
+            if (!TryReadNearbyMarkerFloatEntry(reinterpret_cast<uintptr_t>(entries) + index * NEARBY_ENTRY_STRIDE_MAY24, marker))
+                continue;
+
+            PushNearbyMarkerUnique(markers, marker);
+        }
+    }
+
+    bool TryResolveKnownMarkerIconKey(std::uint32_t candidate, std::uint32_t& outKey);
+
+    struct CapturedMasterMarker
+    {
+        std::int64_t x = 0;
+        std::int64_t y = 0;
+        std::int64_t z = 0;
+        std::uint32_t key = 0;
+    };
+
+    std::mutex g_masterMarkerMutex;
+    std::vector<CapturedMasterMarker> g_masterMarkers;
+
+    void TryCaptureMasterMarkers(std::uint8_t* state)
+    {
+        std::uint8_t* entries = nullptr;
+        std::uint64_t count = 0;
+        if (!SafeReadValue(reinterpret_cast<uintptr_t>(state + MASTER_MARKER_ARRAY_OFFSET_MAY24), entries) ||
+            !SafeReadValue(reinterpret_cast<uintptr_t>(state + MASTER_MARKER_ARRAY_OFFSET_MAY24 + 0x08), count))
+        {
+            return;
+        }
+
+        if (!IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries)) || count == 0 || count > MASTER_MARKER_MAX_ENTRIES)
+            return;
+
+        std::vector<std::uint8_t> blob(static_cast<std::size_t>(count) * MASTER_MARKER_STRIDE);
+        if (!SafeRead(reinterpret_cast<uintptr_t>(entries), blob.data(), blob.size()))
+            return;
+
+        std::vector<CapturedMasterMarker> markers;
+        markers.reserve(static_cast<std::size_t>(count));
+        for (std::uint64_t index = 0; index < count; ++index)
+        {
+            const std::uint8_t* entry = blob.data() + index * MASTER_MARKER_STRIDE;
+            CapturedMasterMarker marker{};
+            std::memcpy(&marker.x, entry + MASTER_MARKER_POS_OFFSET + 0x00, sizeof(marker.x));
+            std::memcpy(&marker.y, entry + MASTER_MARKER_POS_OFFSET + 0x08, sizeof(marker.y));
+            std::memcpy(&marker.z, entry + MASTER_MARKER_POS_OFFSET + 0x10, sizeof(marker.z));
+            std::memcpy(&marker.key, entry + MASTER_MARKER_KEY_OFFSET, sizeof(marker.key));
+
+            const float worldX = FixedToWorld(marker.x);
+            const float worldZ = FixedToWorld(marker.z);
+            if (std::abs(worldX) < 0.01f && std::abs(worldZ) < 0.01f)
+                continue;
+
+            if (!IsOnMapWorldPosition(worldX, FixedToWorld(marker.y), worldZ))
+                continue;
+
+            markers.push_back(marker);
+        }
+
+        // Surface unknown icon keys (throttled): needed to identify e.g. remote-player
+        // markers so they can be mapped to a proper icon.
+        if (g_debugLoggingEnabled.load())
+        {
+            static std::atomic<DWORD> lastUnknownKeyLogTick{ 0 };
+            const DWORD now = GetTickCount();
+            const DWORD last = lastUnknownKeyLogTick.load();
+            if (last == 0 || now - last >= 15000)
+            {
+                std::ostringstream unknownKeys;
+                int unknownCount = 0;
+                for (const CapturedMasterMarker& marker : markers)
+                {
+                    std::uint32_t resolved = 0;
+                    if (marker.key == 0 || marker.key == MASTER_KEY_FLAME_ALTAR || marker.key == MASTER_KEY_PLAYER_PING ||
+                        TryResolveKnownMarkerIconKey(marker.key, resolved))
+                    {
+                        continue;
+                    }
+                    if (unknownCount != 0)
+                        unknownKeys << ",";
+                    unknownKeys << Hex(marker.key) << "@(" << FixedToWorld(marker.x) << "," << FixedToWorld(marker.z) << ")";
+                    if (++unknownCount >= 6)
+                        break;
+                }
+                if (unknownCount != 0)
+                {
+                    lastUnknownKeyLogTick.store(now);
+                    std::ostringstream oss;
+                    oss << "[Minimap] master markers with unknown icon keys | " << unknownKeys.str();
+                    Log(oss.str());
+                }
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(g_masterMarkerMutex);
+        g_masterMarkers = std::move(markers);
+    }
+
     void AppendNearbyMarkersFromState(std::uint8_t* state, std::vector<CapturedNearbyMarker>& markers)
     {
         std::uint8_t* entries = nullptr;
@@ -2946,6 +3780,11 @@ namespace
             AppendNearbyMarkerEntries(markers, entries, count, 1);
         }
 
+        // NOTE: the May-24-2026 array at state+0x8E8 holds streamed world entities, not
+        // map markers: feeding it into the minimap drew identical jittering icons that
+        // matched nothing on the world map, and its presence suppressed the static POI
+        // catalog via the runtime-match gate. Left unplugged on purpose:
+        // AppendNearbyMarkersFromStateMay24(state, markers);
     }
 
     void AppendNearbyMarkersFromInputList(void* list, std::vector<CapturedNearbyMarker>& markers, std::uint32_t kind)
@@ -3040,6 +3879,10 @@ namespace
         __try
         {
             g_iterInit(ctx, &record, static_cast<std::uint32_t>(sizeof(record)));
+            // May-24-2026 client: iter_init only prepares the cursor; fields are filled by
+            // the first iter_next (matches the game's own call sequence at this hook).
+            if ((record.source == nullptr || record.state == nullptr) && g_iterNext != nullptr)
+                return g_iterNext(ctx, &record, static_cast<std::uint32_t>(sizeof(record)));
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -3136,6 +3979,252 @@ namespace
         Log(oss.str());
     }
 
+    struct WaypointBlockLayout
+    {
+        std::size_t arrayOffset = 0;
+        std::size_t stride = 0;
+        std::size_t positionOffset = 0;
+    };
+
+    std::mutex g_waypointLayoutMutex;
+    WaypointBlockLayout g_waypointLayoutOverride{};
+    std::atomic<DWORD> g_lastWaypointScanTick{ 0 };
+    std::atomic<DWORD> g_lastWaypointFailureLogTick{ 0 };
+    std::atomic<bool> g_waypointOffsetOverrideLogged{ false };
+    std::atomic<int> g_waypointStateSlot{ 0 };
+
+    constexpr std::size_t WAYPOINT_STRIDE_CANDIDATES[] = { WAYPOINT_ENTRY_STRIDE, WAYPOINT_ENTRY_STRIDE_MAY24 };
+    constexpr std::size_t WAYPOINT_POSITION_CANDIDATES[] = { 0x30, 0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x38, 0x40 };
+
+    bool TryReadWaypointBlockAt(std::uint8_t* state, std::size_t arrayOffset, std::uint8_t*& outEntries, std::uint64_t& outCount)
+    {
+        std::uint8_t* entries = nullptr;
+        std::uint64_t count = 0;
+        if (!SafeReadValue(reinterpret_cast<uintptr_t>(state + arrayOffset), entries) ||
+            !SafeReadValue(reinterpret_cast<uintptr_t>(state + arrayOffset + 0x08), count))
+        {
+            return false;
+        }
+
+        outEntries = entries;
+        outCount = count;
+        return true;
+    }
+
+    bool IsOnMapWorldPosition(float x, float y, float z)
+    {
+        // Custom map markers always sit well inside the playable map square; this also
+        // rejects static decoy blocks like (768.3, 0, ~0) that sit on an axis edge.
+        return x > 1.0f && x < REAL_MAP_WORLD_SIZE + 64.0f &&
+            z > 1.0f && z < REAL_MAP_WORLD_SIZE + 64.0f &&
+            y > -2000.0f && y < 5000.0f;
+    }
+
+    bool WaypointEntriesMatchLayout(std::uint8_t* entries, std::uint64_t count, std::size_t stride, std::size_t positionOffset)
+    {
+        if (!IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries)) || count == 0 || count > WAYPOINT_MAX_ENTRIES)
+            return false;
+
+        const std::uint64_t samples = std::min<std::uint64_t>(count, 3);
+        for (std::uint64_t index = 0; index < samples; ++index)
+        {
+            std::uint8_t* entry = entries + (index * stride);
+            std::int64_t x = 0;
+            std::int64_t y = 0;
+            std::int64_t z = 0;
+            if (!SafeReadValue(reinterpret_cast<uintptr_t>(entry + positionOffset + 0x00), x) ||
+                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + positionOffset + 0x08), y) ||
+                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + positionOffset + 0x10), z))
+            {
+                return false;
+            }
+
+            if (!IsOnMapWorldPosition(FixedToWorld(x), FixedToWorld(y), FixedToWorld(z)))
+                return false;
+        }
+
+        return true;
+    }
+
+    bool TryMatchWaypointLayoutAt(std::uint8_t* state, std::size_t arrayOffset, WaypointBlockLayout& outLayout, std::uint8_t*& outEntries, std::uint64_t& outCount)
+    {
+        std::uint8_t* entries = nullptr;
+        std::uint64_t count = 0;
+        if (!TryReadWaypointBlockAt(state, arrayOffset, entries, count))
+            return false;
+
+        if (count == 0 || count > WAYPOINT_MAX_ENTRIES ||
+            !IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries)))
+        {
+            return false;
+        }
+
+        for (std::size_t stride : WAYPOINT_STRIDE_CANDIDATES)
+        {
+            for (std::size_t positionOffset : WAYPOINT_POSITION_CANDIDATES)
+            {
+                if (WaypointEntriesMatchLayout(entries, count, stride, positionOffset))
+                {
+                    outLayout.arrayOffset = arrayOffset;
+                    outLayout.stride = stride;
+                    outLayout.positionOffset = positionOffset;
+                    outEntries = entries;
+                    outCount = count;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool TryScanForWaypointLayout(std::uint8_t* state, WaypointBlockLayout& outLayout, std::uint8_t*& outEntries, std::uint64_t& outCount)
+    {
+        constexpr std::size_t SCAN_START = WAYPOINT_ARRAY_OFFSET_MAY24 > 0x40000 ? WAYPOINT_ARRAY_OFFSET_MAY24 - 0x40000 : 0;
+        constexpr std::size_t SCAN_END = WAYPOINT_ARRAY_OFFSET + 0x40000;
+        constexpr std::size_t CHUNK_BYTES = 0x1000;
+
+        std::uint8_t chunk[CHUNK_BYTES + sizeof(std::uint64_t)];
+        for (std::size_t base = SCAN_START; base < SCAN_END; base += CHUNK_BYTES)
+        {
+            // Read one extra qword so a (pointer, count) pair straddling the chunk edge is still seen.
+            if (!SafeRead(reinterpret_cast<uintptr_t>(state + base), chunk, sizeof(chunk)))
+                continue;
+
+            for (std::size_t offset = 0; offset < CHUNK_BYTES; offset += sizeof(std::uint64_t))
+            {
+                std::uint8_t* entries = nullptr;
+                std::uint64_t count = 0;
+                std::memcpy(&entries, chunk + offset, sizeof(entries));
+                std::memcpy(&count, chunk + offset + sizeof(std::uint64_t), sizeof(count));
+
+                if (!IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries)) || count == 0 || count > WAYPOINT_MAX_ENTRIES)
+                    continue;
+
+                if (TryMatchWaypointLayoutAt(state, base + offset, outLayout, outEntries, outCount))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool TryResolveWaypointBlock(std::uint8_t* state, WaypointBlockLayout& outLayout, std::uint8_t*& outEntries, std::uint64_t& outCount)
+    {
+        std::uint8_t* entries = nullptr;
+        std::uint64_t count = 0;
+
+        // Known layouts first (offset, stride, position offset); legit-empty (count==0)
+        // is accepted without further discovery.
+        const WaypointBlockLayout knownLayouts[] = {
+            { WAYPOINT_ARRAY_OFFSET_MAY24, WAYPOINT_ENTRY_STRIDE_MAY24, WAYPOINT_ENTRY_POSITION_MAY24 },
+            { WAYPOINT_ARRAY_OFFSET, WAYPOINT_ENTRY_STRIDE, WAYPOINT_ENTRY_POSITION_OFFSET },
+        };
+        for (const WaypointBlockLayout& known : knownLayouts)
+        {
+            if (!TryReadWaypointBlockAt(state, known.arrayOffset, entries, count))
+                continue;
+
+            if (count == 0 && (entries == nullptr || IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(entries))))
+            {
+                outLayout = known;
+                outEntries = entries;
+                outCount = 0;
+                return true;
+            }
+
+            if (WaypointEntriesMatchLayout(entries, count, known.stride, known.positionOffset))
+            {
+                outLayout = known;
+                outEntries = entries;
+                outCount = count;
+                return true;
+            }
+
+            if (TryMatchWaypointLayoutAt(state, known.arrayOffset, outLayout, outEntries, outCount))
+                return true;
+        }
+
+        WaypointBlockLayout cached{};
+        {
+            std::lock_guard<std::mutex> lock(g_waypointLayoutMutex);
+            cached = g_waypointLayoutOverride;
+        }
+
+        if (cached.arrayOffset != 0 &&
+            TryReadWaypointBlockAt(state, cached.arrayOffset, entries, count) &&
+            WaypointEntriesMatchLayout(entries, count, cached.stride, cached.positionOffset))
+        {
+            outLayout = cached;
+            outEntries = entries;
+            outCount = count;
+            return true;
+        }
+
+        const DWORD now = GetTickCount();
+        const DWORD lastScan = g_lastWaypointScanTick.load();
+        if (lastScan != 0 && now - lastScan < 10000)
+            return false;
+
+        g_lastWaypointScanTick.store(now);
+
+        WaypointBlockLayout discovered{};
+        if (!TryScanForWaypointLayout(state, discovered, outEntries, outCount))
+            return false;
+
+        {
+            std::lock_guard<std::mutex> lock(g_waypointLayoutMutex);
+            g_waypointLayoutOverride = discovered;
+        }
+
+        if (!g_waypointOffsetOverrideLogged.exchange(true))
+        {
+            std::ostringstream oss;
+            oss << "[Minimap] waypoint array relocated by game update"
+                << " | old_offset=0x" << std::hex << WAYPOINT_ARRAY_OFFSET
+                << " | new_offset=0x" << discovered.arrayOffset
+                << " | stride=0x" << discovered.stride
+                << " | pos_offset=0x" << discovered.positionOffset << std::dec;
+            Log(oss.str());
+        }
+
+        outLayout = discovered;
+        return true;
+    }
+
+    std::uint8_t* ResolveWaypointsUiState(const WaypointsUiIterationRecord& record)
+    {
+        const int cachedSlot = g_waypointStateSlot.load();
+        std::uint8_t* candidates[2] = {};
+        if (cachedSlot == 2)
+        {
+            candidates[0] = record.stateNew;
+            candidates[1] = record.state;
+        }
+        else
+        {
+            candidates[0] = record.state;
+            candidates[1] = record.stateNew;
+        }
+
+        for (int index = 0; index < 2; ++index)
+        {
+            std::uint8_t* candidate = candidates[index];
+            if (!IsLikelyRuntimePointer(reinterpret_cast<uintptr_t>(candidate)))
+                continue;
+
+            std::uint64_t probe = 0;
+            if (!SafeReadValue(reinterpret_cast<uintptr_t>(candidate + UI_STATE_BIG_OBJECT_PROBE), probe))
+                continue;
+
+            const bool isNewSlot = candidate == record.stateNew;
+            g_waypointStateSlot.store(isNewSlot ? 2 : 1);
+            return candidate;
+        }
+
+        return nullptr;
+    }
+
     bool TryCaptureWaypointsFromPlayerWaypointsUi(void* ctx)
     {
         if (g_iterInit == nullptr || ctx == nullptr)
@@ -3147,9 +4236,16 @@ namespace
 
         TryCapturePlayerCameraFromWaypointRecord(record);
 
-        std::uint8_t* state = record.state;
+        std::uint8_t* state = ResolveWaypointsUiState(record);
         if (state == nullptr)
             return false;
+
+        // Keep the position feed alive from this per-frame hook as well; the publish
+        // gate keeps heading-bearing camera positions authoritative when present.
+        TryPublishExactUiStatePosition(state);
+
+        // The master marker array is what the big map renders; mirror it every frame.
+        TryCaptureMasterMarkers(state);
 
         std::vector<CapturedNearbyMarker> nearbyMarkers;
         AppendNearbyMarkersFromState(state, nearbyMarkers);
@@ -3157,13 +4253,11 @@ namespace
         AppendNearbyMarkersFromInputList(record.playerList, nearbyMarkers, 3);
         PublishNearbyMarkers(std::move(nearbyMarkers));
 
+        WaypointBlockLayout layout{};
         std::uint8_t* entries = nullptr;
         std::uint64_t count = 0;
-        if (!SafeReadValue(reinterpret_cast<uintptr_t>(state + WAYPOINT_ARRAY_OFFSET), entries) ||
-            !SafeReadValue(reinterpret_cast<uintptr_t>(state + WAYPOINT_COUNT_OFFSET), count))
-        {
+        if (!TryResolveWaypointBlock(state, layout, entries, count))
             return false;
-        }
 
         if (entries == nullptr || count == 0 || count > WAYPOINT_MAX_ENTRIES)
         {
@@ -3177,18 +4271,25 @@ namespace
 
         for (std::uint64_t index = 0; index < count; ++index)
         {
-            std::uint8_t* entry = entries + (index * WAYPOINT_ENTRY_STRIDE);
+            std::uint8_t* entry = entries + (index * layout.stride);
 
             CapturedWaypoint waypoint{};
             SafeRead(reinterpret_cast<uintptr_t>(entry), waypoint.raw, sizeof(waypoint.raw));
-            if (!SafeReadValue(reinterpret_cast<uintptr_t>(entry + WAYPOINT_ENTRY_POSITION_OFFSET + 0x00), waypoint.x) ||
-                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + WAYPOINT_ENTRY_POSITION_OFFSET + 0x08), waypoint.y) ||
-                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + WAYPOINT_ENTRY_POSITION_OFFSET + 0x10), waypoint.z))
+            if (!SafeReadValue(reinterpret_cast<uintptr_t>(entry + layout.positionOffset + 0x00), waypoint.x) ||
+                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + layout.positionOffset + 0x08), waypoint.y) ||
+                !SafeReadValue(reinterpret_cast<uintptr_t>(entry + layout.positionOffset + 0x10), waypoint.z))
             {
                 continue;
             }
 
             SafeReadValue(reinterpret_cast<uintptr_t>(entry), waypoint.id);
+            if (waypoint.id == 0)
+            {
+                // May-24-2026 layout keeps the marker id/type words at entry+0x30.
+                std::uint32_t altId = 0;
+                if (SafeReadValue(reinterpret_cast<uintptr_t>(entry + 0x30), altId))
+                    waypoint.id = altId;
+            }
             if (!IsPlausibleWorldPosition(FixedToWorld(waypoint.x), FixedToWorld(waypoint.y), FixedToWorld(waypoint.z)))
                 continue;
 
@@ -3221,7 +4322,15 @@ namespace
     void __fastcall CaptureWaypointsHook(void* ctx, void*, void*, void*)
     {
         if (!TryCaptureWaypointsFromPlayerWaypointsUi(ctx))
-            Log("[Minimap] failed to read internal player_waypoints_ui state");
+        {
+            const DWORD now = GetTickCount();
+            const DWORD last = g_lastWaypointFailureLogTick.load();
+            if (last == 0 || now - last >= 10000)
+            {
+                g_lastWaypointFailureLogTick.store(now);
+                Log("[Minimap] failed to read internal player_waypoints_ui state (repeats suppressed for 10s)");
+            }
+        }
     }
 
     void __fastcall CaptureRenderPresentFrameHook(void* renderContext, void*, void* swapchainState, void*)
@@ -3685,6 +4794,10 @@ namespace
         fns.cmdPushConstants = ResolveDeviceFunction<CmdPushConstantsFn>(getDeviceProcAddr, device, "vkCmdPushConstants");
         fns.cmdDraw = ResolveDeviceFunction<CmdDrawFn>(getDeviceProcAddr, device, "vkCmdDraw");
         fns.createSemaphore = ResolveDeviceFunction<CreateSemaphoreFn>(getDeviceProcAddr, device, "vkCreateSemaphore");
+        fns.createFence = ResolveDeviceFunction<CreateFenceFn>(getDeviceProcAddr, device, "vkCreateFence");
+        fns.destroyFence = ResolveDeviceFunction<DestroyFenceFn>(getDeviceProcAddr, device, "vkDestroyFence");
+        fns.waitForFences = ResolveDeviceFunction<WaitForFencesFn>(getDeviceProcAddr, device, "vkWaitForFences");
+        fns.resetFences = ResolveDeviceFunction<ResetFencesFn>(getDeviceProcAddr, device, "vkResetFences");
         fns.destroySemaphore = ResolveDeviceFunction<DestroySemaphoreFn>(getDeviceProcAddr, device, "vkDestroySemaphore");
         fns.queueSubmit = ResolveDeviceFunction<QueueSubmitFn>(getDeviceProcAddr, device, "vkQueueSubmit");
         fns.deviceWaitIdle = ResolveDeviceFunction<DeviceWaitIdleFn>(getDeviceProcAddr, device, "vkDeviceWaitIdle");
@@ -3722,6 +4835,42 @@ namespace
 
         g_lastVulkanRendererLogTick = now;
         Log(message);
+    }
+
+    DWORD g_lastDrawGateLogTick = 0;
+
+    void LogDrawGateThrottled()
+    {
+        if (!g_debugLoggingEnabled.load())
+            return;
+
+        const DWORD now = GetTickCount();
+        if (now - g_lastDrawGateLogTick < 5000)
+            return;
+
+        g_lastDrawGateLogTick = now;
+
+        CURSORINFO cursorInfo{};
+        cursorInfo.cbSize = sizeof(cursorInfo);
+        const bool cursorShowing = GetCursorInfo(&cursorInfo) && (cursorInfo.flags & CURSOR_SHOWING) != 0;
+
+        bool positionValid = false;
+        DWORD positionAgeMs = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_playerPositionMutex);
+            positionValid = g_playerPosition.valid;
+            if (positionValid)
+                positionAgeMs = now - g_playerPosition.lastUpdateTick;
+        }
+
+        std::ostringstream oss;
+        oss << "[Minimap] draw skipped"
+            << " | visible=" << (g_minimapVisible.load() ? "on" : "off")
+            << " | cursor_showing=" << (cursorShowing ? "yes" : "no")
+            << " | position_valid=" << (positionValid ? "yes" : "no")
+            << " | position_age_ms=" << positionAgeMs
+            << " | stale_after_ms=" << WORLD_DATA_STALE_MS;
+        Log(oss.str());
     }
 
     std::string JoinPath(const std::string& base, const std::string& name);
@@ -4107,6 +5256,15 @@ namespace
                 }
             }
 
+            if (fns.destroyFence != nullptr)
+            {
+                for (uintptr_t fence : g_renderer.commandFences)
+                {
+                    if (fence != 0)
+                        fns.destroyFence(device, reinterpret_cast<void*>(fence), nullptr);
+                }
+            }
+
             if (fns.destroyFramebuffer != nullptr)
             {
                 for (uintptr_t framebuffer : g_renderer.framebuffers)
@@ -4196,12 +5354,21 @@ namespace
         const std::uint32_t height = snapshot.height != 0 ? snapshot.height : fallbackHeight;
         const std::uint32_t format = snapshot.format != 0 ? snapshot.format : 37;
 
+        // Compare the image-handle set too: when the game recreates its swapchain the
+        // handle value can be reused, so matching only handle+extent would keep stale
+        // framebuffers/image views and fault the driver on submit. A changed image set
+        // forces a rebuild.
+        // When the snapshot carries image handles, a mismatch means the swapchain was
+        // recreated (possibly at the same handle value) and our objects are stale. When
+        // it carries none, fall back to handle+extent identity so we don't thrash.
+        const bool imagesConsistent = snapshot.images.empty() || g_renderer.images == snapshot.images;
         if (g_renderer.ready &&
             g_renderer.device == snapshot.device &&
             g_renderer.swapchain == snapshot.handle &&
             g_renderer.format == format &&
             g_renderer.width == width &&
-            g_renderer.height == height)
+            g_renderer.height == height &&
+            imagesConsistent)
         {
             return true;
         }
@@ -4329,6 +5496,24 @@ namespace
                 return false;
             }
             g_renderer.renderCompleteSemaphores[index] = reinterpret_cast<uintptr_t>(semaphore);
+        }
+
+        // Per-image fences (created signaled): resetting a command buffer that the GPU
+        // may still be executing is undefined behavior and can take down the device;
+        // each re-record now waits for the previous submit of that image to finish.
+        g_renderer.commandFences.assign(g_renderer.images.size(), 0);
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        for (std::size_t index = 0; index < g_renderer.commandFences.size(); ++index)
+        {
+            void* fence = nullptr;
+            if (g_renderer.fns.createFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS || fence == nullptr)
+            {
+                LogRendererThrottled("[Minimap] Vulkan minimap renderer not ready: fence creation failed");
+                DestroyVulkanMinimapRendererLocked();
+                return false;
+            }
+            g_renderer.commandFences[index] = reinterpret_cast<uintptr_t>(fence);
         }
 
         g_renderer.ready = true;
@@ -4550,10 +5735,10 @@ namespace
 
     void CmdClearPoiBackplate(VulkanMinimapRenderer& renderer, void* commandBuffer, int cx, int cy, int radius, int x, int y, int size, float red, float green, float blue)
     {
-        CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x + 1, y + 2, size + 5, 0.0f, 0.0f, 0.0f, 0.72f);
-        CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, size + 4, 0.055f, 0.045f, 0.034f, 0.98f);
+        // Big-map style: bright icon on a light parchment pill, no black shadow ring.
+        CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, size + 4, 0.99f, 0.97f, 0.90f, 0.92f);
         CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, size + 2, red, green, blue, 0.95f);
-        CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, size, 0.055f, 0.048f, 0.040f, 0.96f);
+        CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, size, 0.99f, 0.97f, 0.90f, 0.95f);
     }
 
     void CmdClearQuestIcon(VulkanMinimapRenderer& renderer, void* commandBuffer, int cx, int cy, int radius, int x, int y, int size, float red, float green, float blue)
@@ -4562,6 +5747,19 @@ namespace
         CmdClearSolidDiamond(renderer, commandBuffer, x, y, MaxValue(4, size - 1), red, green, blue);
         CmdClearRect(renderer, commandBuffer, 1.0f, 0.93f, 0.72f, 1.0f, x - 1, y - size + 2, 3, MaxValue(4, size));
         CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y + size - 2, 2, 1.0f, 0.93f, 0.72f);
+    }
+
+    // Player-placed waypoint: red flag on a light pole, mirroring the in-game marker.
+    void CmdClearFlagIcon(VulkanMinimapRenderer& renderer, void* commandBuffer, int cx, int cy, int radius, int x, int y, int size)
+    {
+        CmdClearPoiBackplate(renderer, commandBuffer, cx, cy, radius, x, y, size, 0.92f, 0.18f, 0.14f);
+        const int poleHeight = size * 2 + 2;
+        const int poleTop = y - size - 2;
+        CmdClearRect(renderer, commandBuffer, 0.97f, 0.94f, 0.86f, 1.0f, x - 1, poleTop, 2, poleHeight);
+        const int flagWidth = MaxValue(5, size + 1);
+        const int flagHeight = MaxValue(4, size - 1);
+        CmdClearRect(renderer, commandBuffer, 0.96f, 0.16f, 0.12f, 1.0f, x + 1, poleTop, flagWidth, flagHeight);
+        CmdClearRect(renderer, commandBuffer, 0.72f, 0.08f, 0.06f, 1.0f, x + 1, poleTop + flagHeight - 1, flagWidth, 1);
     }
 
     void CmdClearHomeIcon(VulkanMinimapRenderer& renderer, void* commandBuffer, int cx, int cy, int radius, int x, int y, int size, float red, float green, float blue)
@@ -4648,6 +5846,21 @@ namespace
         {
         case 10:
             CmdClearQuestIcon(renderer, commandBuffer, cx, cy, radius, x, y, clipped ? 7 : 10, 1.0f, 0.72f, 0.10f);
+            break;
+        case 11:
+            CmdClearFlagIcon(renderer, commandBuffer, cx, cy, radius, x, y, clipped ? 7 : 10);
+            break;
+        case 12:
+            // NPC / crafter: small light-blue figure dot on a light pill.
+            CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, 5, 0.99f, 0.97f, 0.90f, 0.88f);
+            CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y, 3, 0.30f, 0.66f, 0.96f, 1.0f);
+            CmdClearSmallCircle(renderer, commandBuffer, cx, cy, radius, x, y - 3, 2, 0.44f, 0.76f, 1.0f, 1.0f);
+            break;
+        case 13:
+            // Multiplayer ping: green diamond, like the big map.
+            CmdClearPoiBackplate(renderer, commandBuffer, cx, cy, radius, x, y, size, 0.18f, 0.78f, 0.30f);
+            CmdClearSolidDiamond(renderer, commandBuffer, x, y, MaxValue(4, size - 1), 0.20f, 0.82f, 0.32f);
+            CmdClearRect(renderer, commandBuffer, 0.06f, 0.28f, 0.10f, 1.0f, x - 1, y - size / 2, 3, MaxValue(3, size - 2));
             break;
         case 2:
         case 40:
@@ -5590,6 +6803,36 @@ namespace
         const int top = y - targetHeight / 2;
         const int radiusSq = radius * radius;
 
+        // Big-map styling: the atlas stores only the raw glyph, while the game frames
+        // it in a golden diamond. Detect glyph polarity (light-on-dark vs dark-on-light)
+        // and repaint: golden diamond backplate + dark glyph, like the world map.
+        std::uint32_t opaqueCount = 0;
+        std::uint32_t litCount = 0;
+        for (std::uint32_t sy = 0; sy < icon.height; sy += 2)
+        {
+            for (std::uint32_t sx = 0; sx < icon.width; sx += 2)
+            {
+                const std::size_t so = (static_cast<std::size_t>(sy) * icon.width + sx) * 4u;
+                if (icon.rgba[so + 3] <= 24)
+                    continue;
+                ++opaqueCount;
+                const float lum = (0.30f * icon.rgba[so + 0] + 0.59f * icon.rgba[so + 1] + 0.11f * icon.rgba[so + 2]) / 255.0f;
+                if (lum > 0.5f)
+                    ++litCount;
+            }
+        }
+        if (opaqueCount == 0)
+            return false;
+        const bool glyphIsDark = litCount * 2 > opaqueCount;
+
+        const int diamond = MaxValue(6, targetWidth / 2 + 1);
+        CmdClearSolidDiamond(renderer, commandBuffer, x, y, diamond + 2, 0.99f, 0.95f, 0.78f);
+        CmdClearSolidDiamond(renderer, commandBuffer, x, y, diamond, 0.97f, 0.75f, 0.16f);
+
+        constexpr float GLYPH_RED = 0.33f;
+        constexpr float GLYPH_GREEN = 0.20f;
+        constexpr float GLYPH_BLUE = 0.05f;
+
         for (int dstY = 0; dstY < targetHeight; ++dstY)
         {
             const int screenY = top + dstY;
@@ -5628,29 +6871,26 @@ namespace
                     (static_cast<std::size_t>(srcY) * static_cast<std::size_t>(icon.width) + static_cast<std::size_t>(srcX)) *
                     4u;
                 const std::uint8_t alpha = icon.rgba[offset + 3];
-                if (alpha <= 24)
+                bool isGlyph = alpha > 24;
+                if (isGlyph)
+                {
+                    const float lum = (0.30f * icon.rgba[offset + 0] + 0.59f * icon.rgba[offset + 1] + 0.11f * icon.rgba[offset + 2]) / 255.0f;
+                    isGlyph = glyphIsDark ? lum < 0.45f : lum > 0.55f;
+                }
+
+                if (!isGlyph)
                 {
                     flushRun(screenX);
                     continue;
                 }
 
-                const float red = static_cast<float>(icon.rgba[offset + 0]) / 255.0f;
-                const float green = static_cast<float>(icon.rgba[offset + 1]) / 255.0f;
-                const float blue = static_cast<float>(icon.rgba[offset + 2]) / 255.0f;
-
-                if (runStart >= 0 &&
-                    std::fabs(runRed - red) < 0.002f &&
-                    std::fabs(runGreen - green) < 0.002f &&
-                    std::fabs(runBlue - blue) < 0.002f)
+                if (runStart < 0)
                 {
-                    continue;
+                    runStart = screenX;
+                    runRed = GLYPH_RED;
+                    runGreen = GLYPH_GREEN;
+                    runBlue = GLYPH_BLUE;
                 }
-
-                flushRun(screenX);
-                runStart = screenX;
-                runRed = red;
-                runGreen = green;
-                runBlue = blue;
             }
 
             flushRun(left + targetWidth);
@@ -5808,11 +7048,10 @@ namespace
 
     std::uint32_t ResolveCapturedWaypointKind(const CapturedWaypoint& waypoint)
     {
-        std::uint32_t key = 0;
-        if (TryResolveKnownMarkerIconKey(waypoint.id, key))
-            return key;
-
-        return ResolveIconKeyFromRawWords(waypoint.raw, sizeof(waypoint.raw) / sizeof(waypoint.raw[0]), 10);
+        // Player-placed waypoints always draw as the dedicated red flag (kind 11) so the
+        // player can tell their own markers apart at a glance.
+        (void)waypoint;
+        return 11;
     }
 
     std::uint32_t ResolveCapturedMarkerKind(const CapturedNearbyMarker& marker)
@@ -5930,11 +7169,13 @@ namespace
         };
 
         const uintptr_t markerAddress = reinterpret_cast<uintptr_t>(record.marker);
+        const uintptr_t knowledgeAddress = reinterpret_cast<uintptr_t>(record.knowledge);
         const uintptr_t entityAddress = reinterpret_cast<uintptr_t>(record.entity);
         const uintptr_t unknownAddress = reinterpret_cast<uintptr_t>(record.unknown0);
         const uintptr_t stateAddress = reinterpret_cast<uintptr_t>(record.visibilityState);
 
         tryRoot(markerAddress, 0x100);
+        tryRoot(knowledgeAddress, 0x100);
         tryRoot(entityAddress, 0x180);
         tryRoot(unknownAddress, 0x100);
         tryRoot(stateAddress, 0x60);
@@ -6034,15 +7275,41 @@ namespace
 
     bool TryPublishMapMarkerVisibilityRecord(const MapMarkerVisibilityIterationRecord& record)
     {
-        if (record.marker == nullptr || record.visibilityState == nullptr)
+        if (record.visibilityState == nullptr)
             return false;
 
         CapturedMapMarkerVisibility marker{};
-        marker.markerAddress = reinterpret_cast<uintptr_t>(record.marker);
         marker.stateAddress = reinterpret_cast<uintptr_t>(record.visibilityState);
         marker.entityAddress = reinterpret_cast<uintptr_t>(record.entity);
 
-        if (!SafeRead(marker.markerAddress, marker.raw, sizeof(marker.raw)))
+        // May-24-2026 client moved the marker object from record+0x08 to record+0x20
+        // (old +0x20 slot was "knowledge"); pick the first slot whose raw block reads
+        // and carries a non-zero id word.
+        const uintptr_t markerCandidates[] = {
+            reinterpret_cast<uintptr_t>(record.knowledge),
+            reinterpret_cast<uintptr_t>(record.marker)
+        };
+
+        bool haveMarker = false;
+        for (uintptr_t candidate : markerCandidates)
+        {
+            if (!IsLikelyRuntimePointer(candidate))
+                continue;
+
+            std::uint64_t raw[sizeof(marker.raw) / sizeof(marker.raw[0])] = {};
+            if (!SafeRead(candidate, raw, sizeof(raw)))
+                continue;
+
+            if (static_cast<std::uint32_t>(raw[0] & 0xFFFFFFFFu) == 0)
+                continue;
+
+            std::memcpy(marker.raw, raw, sizeof(marker.raw));
+            marker.markerAddress = candidate;
+            haveMarker = true;
+            break;
+        }
+
+        if (!haveMarker)
             return false;
 
         SafeReadValue(marker.stateAddress, marker.visibility);
@@ -6198,6 +7465,29 @@ namespace
             PushWorldPointUnique(points, { FixedToWorld(waypoint.x), FixedToWorld(waypoint.z), ResolveCapturedWaypointKind(waypoint) });
         }
 
+        // Master world-map markers: exactly what the big map shows. Atlas keys draw the
+        // native raster icons; special keys map to dedicated vector icons.
+        {
+            std::lock_guard<std::mutex> lock(g_masterMarkerMutex);
+            for (const CapturedMasterMarker& marker : g_masterMarkers)
+            {
+                std::uint32_t kind;
+                std::uint32_t knownKey = 0;
+                if (marker.key == 0)
+                    kind = 12;
+                else if (marker.key == MASTER_KEY_FLAME_ALTAR)
+                    kind = 31;
+                else if (marker.key == MASTER_KEY_PLAYER_PING)
+                    kind = 13;
+                else if (TryResolveKnownMarkerIconKey(marker.key, knownKey))
+                    kind = marker.key;
+                else
+                    kind = 55;
+
+                PushWorldPointUnique(points, { FixedToWorld(marker.x), FixedToWorld(marker.z), kind });
+            }
+        }
+
         for (const CapturedNearbyMarker& marker : nearbyMarkers)
         {
             if (!marker.hasWorldPosition)
@@ -6343,6 +7633,18 @@ namespace
 
             const float radiusSq = radiusWorld * radiusWorld;
             candidates.reserve(MinValue(g_staticPois.pois.size(), STATIC_POI_MAX_DRAWN));
+            const auto hasPointNear = [&points](float x, float z)
+            {
+                for (const MinimapWorldPoint& existing : points)
+                {
+                    const float dx = existing.x - x;
+                    const float dz = existing.z - z;
+                    if (dx * dx + dz * dz < 25.0f * 25.0f)
+                        return true;
+                }
+                return false;
+            };
+
             for (const StaticPoi& poi : g_staticPois.pois)
             {
                 if (!IsWorldPointRevealedByFogOfWar(poi.x, poi.z))
@@ -6352,6 +7654,11 @@ namespace
                 const float dz = poi.z - centerZ;
                 const float distanceSq = dx * dx + dz * dz;
                 if (distanceSq > radiusSq)
+                    continue;
+
+                // The live master-marker feed already covers this spot with the real
+                // icon; skip the static catalog duplicate.
+                if (hasPointNear(poi.x, poi.z))
                     continue;
 
                 if (requireVisibilityMatch && !HasVisibleMapMarkerNear(visibleMarkerPoints, poi.x, poi.z, poi.kind))
@@ -6452,9 +7759,12 @@ namespace
         std::lock_guard<std::mutex> lock(g_realMapMutex);
         const bool hasMap = g_realMap.loaded && !g_realMap.rgba.empty();
         const int sampleStep = ClampValue(g_minimapMapSampleStep.load(), 1, 4);
+        const float lightLift = static_cast<float>(ClampValue(g_minimapMapLight.load(), 0, 100)) / 100.0f * 0.62f;
         const auto quantizeColor = [](float value) -> float
         {
-            constexpr float kSteps = 34.0f;
+            // 34 steps caused visible color banding; 64 hurt FPS (shorter runs, more
+            // clear-rects). 48 is the measured compromise.
+            constexpr float kSteps = 48.0f;
             return std::round(ClampValue(value, 0.0f, 1.0f) * kSteps) / kSteps;
         };
 
@@ -6529,8 +7839,14 @@ namespace
                     green = ClampValue((green - 0.42f) * 1.22f + 0.42f, 0.0f, 1.0f);
                     blue = ClampValue((blue - 0.42f) * 1.16f + 0.42f, 0.0f, 1.0f);
 
+                    // Parchment lift toward the big map's light look: brighten toward
+                    // paper-white, then warm the tint (blue drops the most).
+                    red = red + (1.0f - red) * lightLift;
+                    green = (green + (1.0f - green) * lightLift) * 0.965f;
+                    blue = (blue + (1.0f - blue) * lightLift) * 0.885f;
+
                     const float distance = std::sqrt(static_cast<float>(distanceSq)) / static_cast<float>(innerRadius);
-                    const float vignette = 1.02f - 0.34f * distance * distance;
+                    const float vignette = 1.01f - 0.10f * distance * distance;
                     red = ClampValue(red * vignette + 0.004f, 0.0f, 1.0f);
                     green = ClampValue(green * vignette + 0.004f, 0.0f, 1.0f);
                     blue = ClampValue(blue * vignette + 0.004f, 0.0f, 1.0f);
@@ -6913,7 +8229,7 @@ namespace
         const int marginY = MaxValue(52, static_cast<int>(renderer.height) / 42);
         const int cx = static_cast<int>(renderer.width) - marginX - radius;
         const int cy = ComputeMinimapCenterY(renderer.height, radius, marginY);
-        const int zoomStep = ClampValue(g_minimapZoomStep.load(), -3, 3);
+        const int zoomStep = ClampValue(g_minimapZoomStep.load(), -3, 7);
         const float zoom = std::pow(1.32f, static_cast<float>(zoomStep));
         const float unitsPerPixel = MINIMAP_BASE_UNITS_PER_PIXEL / zoom;
 
@@ -6929,7 +8245,28 @@ namespace
 
         const float centerX = FixedToWorld(playerPosition.x);
         const float centerZ = FixedToWorld(playerPosition.z);
-        const float mapHeading = playerPosition.hasHeading ? playerPosition.headingRadians : 0.0f;
+
+        // Frame-rate heading smoothing: camera reads arrive irregularly (~20-40 Hz from
+        // the background hold), so ease the drawn rotation toward the target each frame
+        // instead of stepping on every publish.
+        static float smoothedHeading = 0.0f;
+        static DWORD smoothedHeadingTick = 0;
+        static bool smoothedHeadingValid = false;
+        float mapHeading = playerPosition.hasHeading ? playerPosition.headingRadians : 0.0f;
+        const DWORD headingNow = GetTickCount();
+        if (!playerPosition.hasHeading || !smoothedHeadingValid || headingNow - smoothedHeadingTick > 1000)
+        {
+            smoothedHeading = mapHeading;
+            smoothedHeadingValid = playerPosition.hasHeading;
+        }
+        else
+        {
+            const float dtSeconds = static_cast<float>(MinValue<DWORD>(headingNow - smoothedHeadingTick, 250)) / 1000.0f;
+            const float alpha = 1.0f - std::exp(-dtSeconds / 0.055f);
+            smoothedHeading = WrapAngleRadians(smoothedHeading + WrapAngleRadians(mapHeading - smoothedHeading) * alpha);
+        }
+        smoothedHeadingTick = headingNow;
+        mapHeading = smoothedHeading;
         AppendVisibleStaticPoiPoints(points, nearbyMarkers, visibleMapMarkers, centerX, centerZ, unitsPerPixel * static_cast<float>(radius) * STATIC_POI_DRAW_RADIUS_FACTOR);
         LimitMinimapWorldPoints(points, centerX, centerZ);
 
@@ -6957,6 +8294,12 @@ namespace
             int py = cy;
             bool clipped = false;
             ProjectWorldToMinimap(point.x, point.z, centerX, centerZ, unitsPerPixel, mapHeading, cx, cy, pointProjectionRadius, px, py, clipped);
+
+            // Markers beyond the minimap radius used to pile up on the rim (dozens of
+            // icons, a large FPS cost). Only player-authored/critical kinds stay pinned
+            // to the edge: red waypoint flags, multiplayer pings, and people.
+            if (clipped && point.kind != 11 && point.kind != 12 && point.kind != 13)
+                continue;
 
             CmdClearPoiIcon(renderer, commandBuffer, cx, cy, pointClipRadius, px, py, point.kind, clipped);
         }
@@ -7007,6 +8350,27 @@ namespace
             firstSwapchain != 0;
     }
 
+    // The present hook runs on the game's render thread and calls the driver with our
+    // cached Vulkan handles. When the game tears down and recreates its swapchain (scene
+    // loads, resolution changes, and — crucially — handle-value reuse that defeats the
+    // rebuild check), those handles reference destroyed framebuffers/image views and the
+    // driver faults deep inside nvoglv64. SEH turns that fatal AV into a one-frame skip
+    // plus a renderer rebuild, instead of taking the whole game down. This function must
+    // contain no C++ objects needing unwinding (all such work lives in the callees).
+    int RecordAndSubmitMinimapGuarded(void* queue, const VkSubmitInfo* submitInfo, void* commandFence, std::uint32_t imageIndex)
+    {
+        __try
+        {
+            if (!RecordVulkanMinimapCommandLocked(imageIndex))
+                return -1;
+            return static_cast<int>(g_renderer.fns.queueSubmit(queue, 1, submitInfo, commandFence));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1000;
+        }
+    }
+
     bool TrySubmitVulkanMinimap(void* queue, const VkPresentInfoKHR& info, uintptr_t firstSwapchain, std::uint32_t imageIndex, VkPresentInfoKHR& adjustedInfo, const void** adjustedWaitSemaphore)
     {
         if (queue == nullptr || firstSwapchain == 0 || info.waitSemaphoreCount > 8)
@@ -7016,7 +8380,10 @@ namespace
         if (!HasFreshPlayerPosition() && g_renderCameraFallbackEnabled.load())
             TryCapturePlayerCameraFromRenderRoots();
         if (!ShouldDrawMinimapInWorld())
+        {
+            LogDrawGateThrottled();
             return false;
+        }
 
         if (info.waitSemaphoreCount != 0 && info.pWaitSemaphores == nullptr)
             return false;
@@ -7035,12 +8402,27 @@ namespace
         if (!BuildVulkanMinimapRendererLocked(snapshot))
             return false;
 
-        if (imageIndex >= g_renderer.commandBuffers.size() || imageIndex >= g_renderer.renderCompleteSemaphores.size())
-            return false;
-
-        if (!RecordVulkanMinimapCommandLocked(imageIndex))
+        if (imageIndex >= g_renderer.commandBuffers.size() || imageIndex >= g_renderer.renderCompleteSemaphores.size() ||
+            imageIndex >= g_renderer.commandFences.size())
         {
-            LogRendererThrottled("[Minimap] Vulkan minimap draw skipped: command recording failed");
+            return false;
+        }
+
+        // Wait until the GPU is done with this image's previous minimap submit before
+        // resetting/re-recording its command buffer (device-lost guard). A miss just
+        // skips the overlay for one frame.
+        void* commandFence = reinterpret_cast<void*>(g_renderer.commandFences[imageIndex]);
+        void* fenceDevice = reinterpret_cast<void*>(g_renderer.device);
+        const std::int32_t fenceWait = g_renderer.fns.waitForFences(fenceDevice, 1, &commandFence, 1, 8000000ull);
+        if (fenceWait != VK_SUCCESS)
+        {
+            LogRendererThrottled("[Minimap] Vulkan minimap draw skipped: previous frame still in flight");
+            return false;
+        }
+
+        if (g_renderer.fns.resetFences(fenceDevice, 1, &commandFence) != VK_SUCCESS)
+        {
+            LogRendererThrottled("[Minimap] Vulkan minimap draw skipped: fence reset failed");
             return false;
         }
 
@@ -7057,14 +8439,18 @@ namespace
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &signalSemaphore;
 
-        const std::int32_t submitResult = g_renderer.fns.queueSubmit(queue, 1, &submitInfo, nullptr);
+        // Record + submit under SEH: a driver fault here (stale swapchain handles) must
+        // not crash the game. On any failure the fence stayed unsignaled, so rebuild the
+        // renderer to get a fresh signaled fence and valid handles next frame.
+        const int submitResult = RecordAndSubmitMinimapGuarded(queue, &submitInfo, commandFence, imageIndex);
         if (submitResult != VK_SUCCESS)
         {
             std::ostringstream oss;
-            oss << "[Minimap] Vulkan minimap draw skipped: queue submit failed"
+            oss << "[Minimap] Vulkan minimap draw skipped: record/submit failed"
                 << " | result=" << submitResult
                 << " | image_index=" << imageIndex;
             LogRendererThrottled(oss.str());
+            DestroyVulkanMinimapRendererLocked();
             return false;
         }
 
@@ -7082,7 +8468,7 @@ namespace
         if ((GetAsyncKeyState(VK_ADD) & 0x0001) != 0 ||
             (GetAsyncKeyState(VK_OEM_PLUS) & 0x0001) != 0)
         {
-            step = ClampValue(step + 1, -3, 3);
+            step = ClampValue(step + 1, -3, 7);
             changed = true;
         }
 
@@ -7858,6 +9244,7 @@ namespace
                 UpdateMinimapRuntimeControls(modContext);
                 PollGameSessionLog();
                 ProbeVulkanTable();
+                MaybeStartCameraSignatureScan();
             }
         }
 
