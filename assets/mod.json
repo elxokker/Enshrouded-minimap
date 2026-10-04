@@ -15,6 +15,14 @@
       "toggle_key": "F10",
       "render_camera_fallback": true,
       "debug_logging": false,
+      "show_other_players": true,
+      "show_pings": true,
+      "show_waypoints": true,
+      "show_world_markers": true,
+      "show_death_markers": true,
+      "map_light": 55,
+      "icon_style": "original",
+      "heading_smoothing_ms": 55,
       "map_sample_step": 2,
       "max_icons": 64
     }
